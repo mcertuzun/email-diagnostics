@@ -254,7 +254,9 @@ CH_TIMEOUT = 20                   # saniye
 CH_MAX_RETRIES = 3                # 429 / 5xx / timeout icin
 CH_RATE_LIMIT_PER_SEC = 1.8       # resmi limit: 600 istek / 5 dk = 2.0/sn
 CH_WORKERS = 4                    # paralel thread sayisi
-CH_PAGE_SIZE = 100                # officers endpoint sayfa boyutu
+CH_PAGE_SIZE = 100                # officers endpoint sayfa boyutu (UST SINIR, garanti degil)
+CH_MAX_OFFICERS = 2000            # tek sirkette taranacak azami officer sayisi
+CH_MAX_REQUESTS = None            # toplam HTTP istegi ust siniri (None = sinirsiz)
 
 # --- Loglama -------------------------------------------------------
 LOG_LEVEL = logging.INFO
@@ -1257,19 +1259,51 @@ class RateLimiter(object):
 class CompaniesHouseClient(object):
     """Companies House REST istemcisi: throttle + retry + pagination."""
 
-    def __init__(self, api_key, rate_per_second=CH_RATE_LIMIT_PER_SEC):
+    def __init__(self, api_key, rate_per_second=CH_RATE_LIMIT_PER_SEC,
+                 max_requests=CH_MAX_REQUESTS):
         self._session = requests.Session()
         self._session.auth = (api_key, "")     # Basic auth: kullanici=anahtar, sifre bos
         self._session.headers.update({"Accept": "application/json"})
         self._limiter = RateLimiter(rate_per_second)
         self.last_status = {}                  # regnum -> son HTTP kodu (DEBUG icin)
 
+        # Kota takibi: kac HTTP istegi gittigini TAHMIN etmek yerine sayariz.
+        self._max_requests = max_requests
+        self._stats_lock = threading.Lock()
+        self.stats = {"requests": 0, "retries": 0, "rate_limited": 0,
+                      "pages": 0, "failed": 0}
+
+    def _bump(self, key, amount=1):
+        with self._stats_lock:
+            self.stats[key] += amount
+
+    def _reserve_request(self):
+        """
+        Istek sayacini artirir. Ust sinir asildiysa False doner ve
+        istek HIC gonderilmez - kotayi korumak icin sert fren.
+        """
+        with self._stats_lock:
+            if self._max_requests is not None and self.stats["requests"] >= self._max_requests:
+                return False
+            self.stats["requests"] += 1
+            return self.stats["requests"]
+
     def _request(self, path, params=None):
         url = CH_API_BASE + path
         last_error = "bilinmeyen hata"
 
         for attempt in range(1, CH_MAX_RETRIES + 1):
+            sequence = self._reserve_request()
+            if sequence is False:
+                raise LookupFailed(
+                    "istek ust sinirina ulasildi ({}). --max-requests ile artirabilirsin."
+                    .format(self._max_requests))
+            if attempt > 1:
+                self._bump("retries")
+
             self._limiter.acquire()
+            log.debug("CH istek #%s (deneme %s): %s %s",
+                      sequence, attempt, path, params or "")
             try:
                 response = self._session.get(url, params=params, timeout=CH_TIMEOUT)
             except requests.exceptions.RequestException as exc:
@@ -1280,6 +1314,7 @@ class CompaniesHouseClient(object):
             code = response.status_code
 
             if code == 200:
+                self._bump("pages")
                 try:
                     return response.json(), code
                 except ValueError:
@@ -1300,6 +1335,7 @@ class CompaniesHouseClient(object):
                     delay = float(retry_after) if retry_after else 5.0
                 except (TypeError, ValueError):
                     delay = 5.0
+                self._bump("rate_limited")
                 log.warning("Rate limit (429) - %.1f sn bekleniyor...", delay)
                 time.sleep(min(delay, 60))
                 last_error = "HTTP 429"
@@ -1312,6 +1348,7 @@ class CompaniesHouseClient(object):
             last_error = "HTTP {}".format(code)
             break
 
+        self._bump("failed")
         raise LookupFailed(last_error)
 
     def get_companies_house_officers(self, company_number):
@@ -1339,8 +1376,16 @@ class CompaniesHouseClient(object):
             except (TypeError, ValueError):
                 total = len(officers)
 
-            start_index += CH_PAGE_SIZE
-            if len(officers) >= total or not items or start_index > 2000:
+            # Sunucu istedigimizden AZ kayit dondurebilir (items_per_page bir
+            # ust sinirdir, garanti degil). Bu yuzden ilerleme, istenen sayfa
+            # boyutu kadar degil, GERCEKTEN donen kayit sayisi kadar olmali.
+            # Aksi halde hem bosuna fazladan istek atilir hem de aradaki
+            # kayitlar sessizce atlanir.
+            received = len(items)
+            if received == 0:
+                break                       # sonsuz donguye karsi emniyet
+            start_index += received
+            if len(officers) >= total or start_index >= CH_MAX_OFFICERS:
                 break
         return officers
 
@@ -1785,6 +1830,19 @@ def fetch_company_data(client, company_numbers):
         for company_number, entry in pool.map(worker, company_numbers):
             results[company_number] = entry
 
+    # Kota raporu: tahmin degil, gercekten gonderilen istek sayisi.
+    stats = client.stats
+    per_company = (float(stats["requests"]) / total) if total else 0.0
+    log.info("Companies House: %s HTTP istegi / %s sirket  (sirket basina %.2f)",
+             stats["requests"], total, per_company)
+    if stats["retries"] or stats["rate_limited"] or stats["failed"]:
+        log.info("  bunun %s tanesi yeniden deneme, %s tanesi rate limit (429), "
+                 "%s sirket basarisiz", stats["retries"], stats["rate_limited"],
+                 stats["failed"])
+    if per_company > 1.2 and not FETCH_COMPANY_PROFILE:
+        log.warning("  Sirket basina 1'den fazla istek gitti. Sebebi genelde cok "
+                    "officer'i olan sirketlerde sayfalamadir.")
+
     if fatal["error"]:
         raise CompaniesHouseAuthError(fatal["error"])
     return results
@@ -2019,7 +2077,7 @@ def main():
         if not api_key:
             raise EnvironmentError(api_key_help())
         log.info("Companies House anahtari bulundu (kaynak: %s)", key_source)
-        client = CompaniesHouseClient(api_key)
+        client = CompaniesHouseClient(api_key, CH_RATE_LIMIT_PER_SEC, CH_MAX_REQUESTS)
         company_data = fetch_company_data(client, company_numbers)
 
         for context in pending:
@@ -2269,6 +2327,9 @@ def build_arg_parser():
                              "(sirket basina +1 istek).")
     triage.add_argument("--workers", type=int, default=CH_WORKERS, metavar="N",
                         help="Paralel Companies House thread sayisi. Varsayilan: %(default)s")
+    triage.add_argument("--max-requests", type=int, default=CH_MAX_REQUESTS, metavar="N",
+                        help="Toplam HTTP istegi ust siniri. Asilirsa istek gonderilmez. "
+                             "Kotayi korumak icin sert fren.")
     triage.add_argument("--rate", type=float, default=CH_RATE_LIMIT_PER_SEC, metavar="N",
                         help="Saniyedeki istek ust siniri. Resmi limit 600/5dk = 2.0. "
                              "Varsayilan: %(default)s")
@@ -2279,7 +2340,7 @@ def apply_cli_args(args):
     """CLI argumanlarini modul ayarlarina uygular."""
     global INPUT_FILE, OUTPUT_FILE, INPUT_SHEET, INPUT_DELIMITER, INPUT_ENCODING
     global DEBUG, DRY_RUN, MAX_ROWS, LOOKUP_MODE, FETCH_COMPANY_PROFILE
-    global CH_WORKERS, CH_RATE_LIMIT_PER_SEC
+    global CH_WORKERS, CH_RATE_LIMIT_PER_SEC, CH_MAX_REQUESTS
 
     INPUT_FILE = args.input
     OUTPUT_FILE = args.output
@@ -2294,6 +2355,7 @@ def apply_cli_args(args):
     FETCH_COMPANY_PROFILE = bool(args.company_profile)
     CH_WORKERS = max(1, int(args.workers))
     CH_RATE_LIMIT_PER_SEC = max(0.1, float(args.rate))
+    CH_MAX_REQUESTS = args.max_requests
 
     if args.verbose:
         log.setLevel(logging.DEBUG)

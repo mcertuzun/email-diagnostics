@@ -113,6 +113,7 @@ Girdi ve çıktı **`.xlsx` veya `.csv`** olabilir; uzantıya bakılarak otomati
 | `--company-profile` | Resmî şirket adı + `company_dissolved` tespiti (şirket başına +1 istek) |
 | `--workers N` | Paralel thread sayısı (varsayılan 4) |
 | `--rate N` | Saniyedeki istek üst sınırı (varsayılan 1.8) |
+| `--max-requests N` | Toplam HTTP isteği üst sınırı — aşılırsa istek gönderilmez. Kota koruması |
 
 Bayrak verilmezse dosyanın en üstündeki varsayılanlar kullanılır.
 
@@ -222,6 +223,17 @@ Hepsi dosyanın en üstünde:
 Companies House limiti **5 dakikada 600 istek** (= 2/sn). Script 4 thread ve saniyede 1.8 istek throttle ile çalışır; thread'ler tavanı *doldurmaya* yarar, tavanı aşamaz. Aynı `regnum` bir kez sorgulanır. `401` alınırsa tüm çalışma anında durur (binlerce satıra boşuna `lookup_failed` yazmamak için), `429` ve `5xx` için exponential backoff uygulanır, officer listesi sayfalanır (35'ten fazla officer'ı olan şirketler için şart).
 
 Kaba tahmin: 1.000 farklı şirket ≈ 10 dakika.
+
+Çalışma sonunda **gerçekten gönderilen** istek sayısı raporlanır — tahmin değil, sayaç:
+
+```
+Companies House: 12 HTTP istegi / 10 sirket  (sirket basina 1.20)
+  bunun 1 tanesi yeniden deneme, 0 tanesi rate limit (429), 0 sirket basarisiz
+```
+
+Şirket başına 1'den fazla istek görürseniz sebebi genelde 35'ten fazla officer'ı olan şirketlerde sayfalamadır. `--max-requests N` ile sert bir tavan koyabilirsiniz: sınır aşılınca istek hiç gönderilmez.
+
+`python test_pagination.py` sayfalamayı sahte bir sunucuyla doğrular — ağ gerektirmez.
 
 ## Testler
 
