@@ -281,6 +281,7 @@ class R(object):
     DOMAIN_TYPO = "domain_typo"
     MISSING_REGNUM = "missing_regnum"
     COMPANY_NOT_FOUND = "company_not_found"
+    CH_SKIPPED = "companies_house_skipped"
     COMPANY_DISSOLVED = "company_dissolved"
     LOOKUP_FAILED = "companies_house_lookup_failed"
     NO_OFFICER = "no_officer_match_found"
@@ -2004,11 +2005,15 @@ def main():
     company_numbers = sorted(set(c["regnum"] for c in pending if c["regnum"]))
 
     if DRY_RUN:
-        log.warning("DRY_RUN aktif: Companies House cagrilmadi.")
+        # Companies House BILEREK atlandi. Bu bir hata degil, bu yuzden
+        # 'lookup_failed' yazmak yanlis olur - ayri bir deger kullaniyoruz.
+        # E-posta asamasindan gelen reason korunur, boylece typo analizi
+        # tam olarak elde kalir; sadece officer kontrolu yapilmamis olur.
+        log.warning("Companies House atlandi (--dry-run / --no-ch): %s satir "
+                    "officer kontrolu yapilmadan isaretlendi.", len(pending))
         for context in pending:
-            context["result"] = context["result"] or R.LOOKUP_FAILED
+            context["result"] = context["result"] or R.CH_SKIPPED
             context["officer_status"] = "not_checked"
-            context["reason"] = context["reason"] or "dry_run"
     elif company_numbers or pending:
         api_key, key_source = get_api_key()
         if not api_key:
@@ -2215,7 +2220,8 @@ def build_arg_parser():
     check.add_argument("-i", "--input", default=None, metavar="YOL",
                        help="Verilirse girdi dosyasi da kontrol edilir: okunabiliyor mu, "
                             "zorunlu kolonlar var mi, kac satir analiz edilecek.")
-    check.add_argument("--skip-api", action="store_true",
+    check.add_argument("--skip-api", "--no-ch", "--dry-run", dest="skip_api",
+                       action="store_true",
                        help="Anahtari sinamak icin test istegi gonderme (tamamen offline).")
     check.add_argument("--delimiter", default=None, metavar="KARAKTER",
                        help="CSV ayraci (varsayilan: otomatik tahmin).")
@@ -2247,8 +2253,10 @@ def build_arg_parser():
                         help="Her satirin kararini tek tek yazar (DEBUG loglama).")
     triage.add_argument("--debug", action="store_true",
                         help="Cikti dosyasina denetim kolonlarini da ekler.")
-    triage.add_argument("--dry-run", action="store_true",
-                        help="Companies House'a hic gitmez. Offline test icin.")
+    triage.add_argument("--dry-run", "--no-ch", "--skip-api", dest="dry_run",
+                        action="store_true",
+                        help="Companies House'a hic gitmez; sadece typo analizi yapilir. "
+                             "Atlanan satirlara '{}' yazilir.".format(R.CH_SKIPPED))
     triage.add_argument("--limit", type=int, default=MAX_ROWS, metavar="N",
                         help="Sadece ilk N problemli satiri isler. Kota yakmadan deneme icin.")
 

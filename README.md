@@ -104,7 +104,7 @@ Girdi ve çıktı **`.xlsx` veya `.csv`** olabilir; uzantıya bakılarak otomati
 | `-o`, `--output` | Çıktı dosyası — uzantısına göre CSV veya Excel yazılır |
 | `-v`, `--verbose` | Her satırın kararını tek tek yazar |
 | `--debug` | Çıktıya 11 denetim kolonu ekler |
-| `--dry-run` | Companies House'a hiç gitmez — offline test |
+| `--dry-run` (`--no-ch`, `--skip-api`) | Companies House'a hiç gitmez; sadece typo analizi yapılır. Atlanan satırlara `companies_house_skipped` yazılır |
 | `--limit N` | Sadece ilk N problemli satırı işler — kota yakmadan deneme |
 | `--sheet AD` | Excel sayfa adı (varsayılan: ilk sayfa) |
 | `--delimiter` | CSV ayracı — verilmezse `;` `,` sekme `\|` arasından tahmin edilir |
@@ -191,7 +191,9 @@ Orijinal kolonların tamamı korunur, sonlarına eklenir:
 
 ### `result` değerleri
 
-`missing_email` · `malformed_email` · `first_name_typo` · `surname_typo` · `first_name_and_surname_typo` · `domain_typo` · `active_officer_match: <isim>` · `resigned_officer_match: <isim>` · `possible_officer_match_active: <isim>` · `possible_officer_match_resigned: <isim>` · `no_officer_match_found` · `company_not_found` · `company_dissolved` · `companies_house_lookup_failed` · `missing_regnum`
+`missing_email` · `malformed_email` · `first_name_typo` · `surname_typo` · `first_name_and_surname_typo` · `domain_typo` · `active_officer_match: <isim>` · `resigned_officer_match: <isim>` · `possible_officer_match_active: <isim>` · `possible_officer_match_resigned: <isim>` · `no_officer_match_found` · `company_not_found` · `company_dissolved` · `companies_house_lookup_failed` · `companies_house_skipped` · `missing_regnum`
+
+`companies_house_lookup_failed` gerçek bir hatadır (API'ye ulaşılamadı). `companies_house_skipped` ise `--no-ch` ile bilerek atlandığı anlamına gelir — ikisini karıştırmayın.
 
 ### `result_reason` değerleri
 
