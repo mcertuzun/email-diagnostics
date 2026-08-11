@@ -105,7 +105,8 @@ Girdi ve çıktı **`.xlsx` veya `.csv`** olabilir; uzantıya bakılarak otomati
 | `-v`, `--verbose` | Her satırın kararını tek tek yazar |
 | `--debug` | Çıktıya 11 denetim kolonu ekler |
 | `--dry-run` (`--no-ch`, `--skip-api`) | Companies House'a hiç gitmez; sadece typo analizi yapılır. Atlanan satırlara `companies_house_skipped` yazılır |
-| `--limit N` | Sadece ilk N problemli satırı işler — kota yakmadan deneme |
+| `--limit N` | Sadece ilk N problemli **satırı** işler |
+| `--limit-companies N` | En fazla N benzersiz **regnum** sorgulanır — kotayı belirleyen budur |
 | `--sheet AD` | Excel sayfa adı (varsayılan: ilk sayfa) |
 | `--delimiter` | CSV ayracı — verilmezse `;` `,` sekme `\|` arasından tahmin edilir |
 | `--encoding` | CSV kodlaması — verilmezse `utf-8-sig`, `cp1254`, `cp1252` sırayla denenir |
@@ -231,9 +232,25 @@ Companies House: 12 HTTP istegi / 10 sirket  (sirket basina 1.20)
   bunun 1 tanesi yeniden deneme, 0 tanesi rate limit (429), 0 sirket basarisiz
 ```
 
-Şirket başına 1'den fazla istek görürseniz sebebi genelde 35'ten fazla officer'ı olan şirketlerde sayfalamadır. `--max-requests N` ile sert bir tavan koyabilirsiniz: sınır aşılınca istek hiç gönderilmez.
+### Kaç istek gider?
 
-`python test_pagination.py` sayfalamayı sahte bir sunucuyla doğrular — ağ gerektirmez.
+**Şirket başına 1 istek.** Bundan fazlası yalnızca iki sebeple olur:
+
+1. **Sayfalama.** Companies House'un `total_results` değeri **istifa etmiş officer'ları da sayar**, dolayısıyla köklü şirketlerde liste tek sayfaya sığmaz. 70 officer'lı bir şirket 2 istek demektir. Bu indirgenemez.
+2. **Yeniden deneme.** Timeout, 429 veya 5xx sonrası.
+
+`--limit` **satır** sayısını sınırlar, şirket sayısını değil — 10 satır 3 farklı regnum taşıyorsa yalnızca 3 şirket sorgulanır. Kotayı doğrudan sınırlamak için `--limit-companies N` kullanın; sert tavan için `--max-requests N` (sınır aşılınca istek hiç gönderilmez).
+
+Sahte bir sunucuyla ölçülmüş gerçek rakamlar (`python test_quota.py`):
+
+| Senaryo | İstek |
+|---|---|
+| `--limit 10`, 10 farklı küçük şirket | 10 |
+| `--limit 10`, satırlar 4 şirketi paylaşıyor | 4 |
+| `--limit 10`, 10 şirket × 70 officer | 20 |
+| `--limit-companies 3`, 70 officer'lı şirketler | 6 |
+
+`python test_pagination.py` de sayfalamayı ayrıca doğrular. İkisi de ağ gerektirmez.
 
 ## Testler
 

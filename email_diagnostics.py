@@ -86,6 +86,7 @@ INPUT_ENCODING = None                            # CSV kodlamasi; None = otomati
 DEBUG = False          # True -> yardimci/denetim kolonlari da yazilir
 DRY_RUN = False        # True -> Companies House cagrilmaz (offline test)
 MAX_ROWS = None        # Orn. 50 -> sadece ilk 50 problemli satir islenir (test)
+MAX_COMPANIES = None   # Orn. 10 -> en fazla 10 BENZERSIZ regnum sorgulanir (kota testi)
 
 # LOOKUP_MODE:
 #   "typo_first" -> ONCE typo kontrolu, temiz satirlar API'ye gider (mevcut karar)
@@ -1806,6 +1807,7 @@ def fetch_company_data(client, company_numbers):
         if fatal["error"]:
             return company_number, {"officers": [], "profile": None, "error": "aborted"}
         entry = {"officers": [], "profile": None, "error": None}
+        before = client.stats["requests"]
         try:
             if FETCH_COMPANY_PROFILE:
                 entry["profile"] = client.get_company_profile(company_number)
@@ -1820,6 +1822,10 @@ def fetch_company_data(client, company_numbers):
         except Exception as exc:                      # beklenmeyen yanit yapisi vb.
             entry["error"] = "failed: {}".format(exc)
 
+        spent = client.stats["requests"] - before
+        if spent > 1:
+            log.debug("  %s: %s istek harcadi (sayfalama veya yeniden deneme)",
+                      company_number, spent)
         with counter_lock:
             counter["done"] += 1
             if counter["done"] % 25 == 0 or counter["done"] == total:
@@ -2060,7 +2066,29 @@ def main():
              len(contexts), len(pending))
 
     # --- STEP 5 ---
+    # DIKKAT: --limit SATIR sayisini sinirlar, sirket sayisini degil.
+    # 10 satir 3 farkli regnum tasiyorsa yalnizca 3 sirket sorgulanir.
+    # Kotayi dogrudan sinirlamak icin --limit-companies kullanilir.
     company_numbers = sorted(set(c["regnum"] for c in pending if c["regnum"]))
+
+    if MAX_COMPANIES and len(company_numbers) > MAX_COMPANIES:
+        kept = set(company_numbers[:MAX_COMPANIES])
+        dropped = len(company_numbers) - len(kept)
+        company_numbers = sorted(kept)
+        skipped = 0
+        for context in pending:
+            if context["regnum"] not in kept:
+                context["result"] = context["result"] or R.CH_SKIPPED
+                context["officer_status"] = "not_checked"
+                skipped += 1
+        pending = [c for c in pending if c["regnum"] in kept]
+        log.warning("--limit-companies %s: %s sirket kapsam disinda birakildi "
+                    "(%s satir '%s' olarak isaretlendi).",
+                    MAX_COMPANIES, dropped, skipped, R.CH_SKIPPED)
+
+    log.info("Kapsam: %s satir -> %s benzersiz sirket "
+             "(sirket basina en az 1 istek gidecek)",
+             len(pending), len(company_numbers))
 
     if DRY_RUN:
         # Companies House BILEREK atlandi. Bu bir hata degil, bu yuzden
@@ -2327,6 +2355,9 @@ def build_arg_parser():
                              "(sirket basina +1 istek).")
     triage.add_argument("--workers", type=int, default=CH_WORKERS, metavar="N",
                         help="Paralel Companies House thread sayisi. Varsayilan: %(default)s")
+    triage.add_argument("--limit-companies", type=int, default=MAX_COMPANIES, metavar="N",
+                        help="En fazla N BENZERSIZ regnum sorgulanir. --limit satir sayisini "
+                             "sinirlar, bu ise sirket sayisini - kotayi belirleyen budur.")
     triage.add_argument("--max-requests", type=int, default=CH_MAX_REQUESTS, metavar="N",
                         help="Toplam HTTP istegi ust siniri. Asilirsa istek gonderilmez. "
                              "Kotayi korumak icin sert fren.")
@@ -2339,7 +2370,7 @@ def build_arg_parser():
 def apply_cli_args(args):
     """CLI argumanlarini modul ayarlarina uygular."""
     global INPUT_FILE, OUTPUT_FILE, INPUT_SHEET, INPUT_DELIMITER, INPUT_ENCODING
-    global DEBUG, DRY_RUN, MAX_ROWS, LOOKUP_MODE, FETCH_COMPANY_PROFILE
+    global DEBUG, DRY_RUN, MAX_ROWS, MAX_COMPANIES, LOOKUP_MODE, FETCH_COMPANY_PROFILE
     global CH_WORKERS, CH_RATE_LIMIT_PER_SEC, CH_MAX_REQUESTS
 
     INPUT_FILE = args.input
@@ -2351,6 +2382,7 @@ def apply_cli_args(args):
     DEBUG = bool(args.debug)
     DRY_RUN = bool(args.dry_run)
     MAX_ROWS = args.limit
+    MAX_COMPANIES = args.limit_companies
     LOOKUP_MODE = args.mode
     FETCH_COMPANY_PROFILE = bool(args.company_profile)
     CH_WORKERS = max(1, int(args.workers))
