@@ -236,7 +236,9 @@ Companies House: 12 HTTP istegi / 10 sirket  (sirket basina 1.20)
 
 **Şirket başına 1 istek.** Bundan fazlası yalnızca iki sebeple olur:
 
-1. **Sayfalama.** Companies House'un `total_results` değeri **istifa etmiş officer'ları da sayar**, dolayısıyla köklü şirketlerde liste tek sayfaya sığmaz. 70 officer'lı bir şirket 2 istek demektir. Bu indirgenemez.
+1. **Sayfalama.** Companies House'un `total_results` değeri **istifa etmiş officer'ları da sayar**, dolayısıyla köklü şirketlerde liste tek sayfaya sığmaz. Bu indirgenemez.
+
+   `items_per_page` üst sınırı Companies House dokümantasyonunda **belirtilmemiştir**. Script varsayım yapmaz: sunucunun yanıtta bildirdiği gerçek sayfa boyutunu okur, sayfalamayı ona göre ilerletir ve çalışma sonunda raporlar (`Sunucunun sayfa basina dondurdugu azami kayit: N`). Kendi verinizdeki gerçek rakamı ilk çalıştırmada görürsünüz.
 2. **Yeniden deneme.** Timeout, 429 veya 5xx sonrası.
 
 `--limit` **satır** sayısını sınırlar, şirket sayısını değil — 10 satır 3 farklı regnum taşıyorsa yalnızca 3 şirket sorgulanır. Kotayı doğrudan sınırlamak için `--limit-companies N` kullanın; sert tavan için `--max-requests N` (sınır aşılınca istek hiç gönderilmez).
@@ -262,6 +264,20 @@ python test_e2e.py     # uçtan uca: gerçek .xlsx oluşturur, çalıştırır, 
 Ağ bağlantısı gerektirmezler.
 
 ---
+
+## Neden şirket şirket sorguluyoruz?
+
+Companies House'ta **officer'ları toplu indirmenin bir yolu yok.** `/company/{regnum}/officers` tasarımı gereği tek şirketliktir; "bana şu 500 şirketin officer'larını ver" diyebileceğiniz bir uç nokta yoktur. API anahtarının türü bunu değiştirmez — bu bir yetki seviyesi değil, API'nin şekli.
+
+Ücretsiz toplu veri ürünleri var ama officer içermiyorlar:
+
+| Ürün | İçerik | Officer var mı? |
+|---|---|---|
+| [Free Company Data Product](https://download.companieshouse.gov.uk/en_output.html) | Tüm aktif şirketler: numara, ad, durum, adres, SIC | **Hayır** |
+| [PSC Data Product](https://download.companieshouse.gov.uk/en_pscdata.html) | Persons with Significant Control anlık görüntüsü | Hayır (PSC ≠ officer, ama küçük şirketlerde büyük ölçüde örtüşür) |
+| [Accounts Data Product](https://download.companieshouse.gov.uk/en_accountsdata.html) | Elektronik sunulan finansal tablolar | Hayır |
+
+**Ama Free Company Data Product yine de işinize yarar:** aylık ücretsiz bir CSV olarak tüm şirketlerin numarasını, resmî adını ve durumunu (`active` / `dissolved`) içerir. Bunu indirip yerelden okursanız `--company-profile`'ın yaptığı işi **sıfır API isteğiyle** yaparsınız — resmî şirket adı ve kapanmış şirket tespiti bedavaya gelir. Bu entegrasyon henüz yazılmadı; ihtiyaç olursa eklenebilir.
 
 ## Bilinen sınırlar
 

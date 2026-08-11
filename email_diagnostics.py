@@ -1272,7 +1272,7 @@ class CompaniesHouseClient(object):
         self._max_requests = max_requests
         self._stats_lock = threading.Lock()
         self.stats = {"requests": 0, "retries": 0, "rate_limited": 0,
-                      "pages": 0, "failed": 0}
+                      "pages": 0, "failed": 0, "server_page_size": 0}
 
     def _bump(self, key, amount=1):
         with self._stats_lock:
@@ -1382,6 +1382,18 @@ class CompaniesHouseClient(object):
             # boyutu kadar degil, GERCEKTEN donen kayit sayisi kadar olmali.
             # Aksi halde hem bosuna fazladan istek atilir hem de aradaki
             # kayitlar sessizce atlanir.
+            # Sunucunun GERCEKTEN kullandigi sayfa boyutunu olc.
+            # items_per_page ust siniri Companies House dokumantasyonunda
+            # BELIRTILMEMISTIR; varsayim yerine yanittan okuyoruz.
+            served = data.get("items_per_page")
+            try:
+                served = int(served)
+            except (TypeError, ValueError):
+                served = len(items)
+            with self._stats_lock:
+                if served > self.stats["server_page_size"]:
+                    self.stats["server_page_size"] = served
+
             received = len(items)
             if received == 0:
                 break                       # sonsuz donguye karsi emniyet
@@ -1845,9 +1857,14 @@ def fetch_company_data(client, company_numbers):
         log.info("  bunun %s tanesi yeniden deneme, %s tanesi rate limit (429), "
                  "%s sirket basarisiz", stats["retries"], stats["rate_limited"],
                  stats["failed"])
+    served = stats.get("server_page_size") or 0
+    if served:
+        log.info("  Sunucunun sayfa basina dondurdugu azami kayit: %s "
+                 "(biz %s istedik)", served, CH_PAGE_SIZE)
     if per_company > 1.2 and not FETCH_COMPANY_PROFILE:
-        log.warning("  Sirket basina 1'den fazla istek gitti. Sebebi genelde cok "
-                    "officer'i olan sirketlerde sayfalamadir.")
+        log.warning("  Sirket basina 1'den fazla istek gitti. Sebebi, officer "
+                    "listesinin tek sayfaya sigmamasidir - total_results ISTIFA "
+                    "ETMIS officer'lari da sayar, koklu sirketlerde liste uzundur.")
 
     if fatal["error"]:
         raise CompaniesHouseAuthError(fatal["error"])
