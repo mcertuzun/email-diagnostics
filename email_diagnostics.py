@@ -48,6 +48,7 @@ from __future__ import print_function
 import argparse
 import csv
 import io
+import json
 import logging
 import os
 import re
@@ -2285,7 +2286,116 @@ def check_setup(input_path=None, skip_api=False, delimiter=None, encoding=None):
 
 
 # ====================================================================
-# BOLUM 13 - KOMUT SATIRI ARAYUZU
+# BOLUM 13 - TEK SIRKET INCELEME  (inspect komutu)
+# ====================================================================
+
+# Scriptin teshis icin FIILEN kullandigi alanlar. Geri kalani API'de
+# vardir ama bu araca girmez; asagida yildizla isaretlenir.
+USED_PROFILE_FIELDS = {"company_name", "company_status", "previous_company_names"}
+USED_OFFICER_FIELDS = {"name", "name_elements", "former_names", "resigned_on", "officer_role"}
+
+
+def _fmt_address(address):
+    if not isinstance(address, dict):
+        return ""
+    parts = [address.get(k) for k in
+             ("premises", "address_line_1", "address_line_2", "locality",
+              "region", "postal_code", "country")]
+    return ", ".join(p for p in parts if p)
+
+
+def inspect_company(company_number, raw=False):
+    """
+    Tek bir regnum icin Companies House'un DONDURDUGU her seyi gosterir.
+    'Ben regnum ile hangi datalari alabiliyorum?' sorusunun pratik cevabi.
+
+    2 istek harcar (profil + officer listesi).
+    """
+    api_key, source = get_api_key()
+    if not api_key:
+        raise EnvironmentError(api_key_help())
+
+    number = normalize_regnum(company_number)
+    if number != str(company_number).strip():
+        log.info("Sirket numarasi normallestirildi: %s -> %s", company_number, number)
+
+    client = CompaniesHouseClient(api_key)
+    profile = {}
+    try:
+        profile = client.get_company_profile(number)
+    except CompanyNotFound:
+        print("Sirket bulunamadi: {}".format(number))
+        return 1
+    officers = client.get_companies_house_officers(number)
+
+    if raw:
+        print(json.dumps({"profile": profile, "officers": officers},
+                         indent=2, ensure_ascii=False, sort_keys=True))
+        return 0
+
+    def show(container, key, label, indent="  "):
+        value = container.get(key)
+        if value in (None, "", [], {}):
+            return
+        star = "*" if key in USED_PROFILE_FIELDS or key in USED_OFFICER_FIELDS else " "
+        print("{}{} {:<26} {}".format(indent, star, key, value))
+
+    print("=" * 72)
+    print(" SIRKET  ({})".format(number))
+    print("=" * 72)
+    for key in ("company_name", "company_number", "company_status", "company_status_detail",
+                "type", "jurisdiction", "date_of_creation", "date_of_cessation",
+                "has_charges", "has_insolvency_history", "sic_codes"):
+        show(profile, key, key)
+    address = _fmt_address(profile.get("registered_office_address"))
+    if address:
+        print("    registered_office_address  {}".format(address))
+    for previous in (profile.get("previous_company_names") or []):
+        print("  * previous_company_names    {}  ({} -> {})".format(
+            previous.get("name"), previous.get("effective_from"), previous.get("ceased_on")))
+
+    print()
+    print("=" * 72)
+    print(" OFFICER'LAR  ({} kayit)".format(len(officers)))
+    print("=" * 72)
+    for index, officer in enumerate(officers, start=1):
+        parsed = _officer_name_parts(officer)
+        status = "ISTIFA (%s)" % officer.get("resigned_on") if officer.get("resigned_on") else "AKTIF"
+        print("-" * 72)
+        print(" #{}  {}   [{}]".format(index, officer.get("name") or "(isim yok)", status))
+        print("-" * 72)
+        elements = officer.get("name_elements")
+        if isinstance(elements, dict):
+            print("  * name_elements              title={} forename={} other={} surname={}".format(
+                elements.get("title") or "-", elements.get("forename") or "-",
+                elements.get("other_forenames") or "-", elements.get("surname") or "-"))
+        elif parsed is None:
+            print("    (kurumsal officer - name_elements yok, eslestirmede atlanir)")
+        for former in (officer.get("former_names") or []):
+            print("  * former_names               {} {}".format(
+                former.get("forenames") or "", former.get("surname") or ""))
+        for key in ("officer_role", "appointed_on", "resigned_on", "nationality",
+                    "occupation", "country_of_residence", "person_number"):
+            show(officer, key, key)
+        birth = officer.get("date_of_birth")
+        if isinstance(birth, dict):
+            print("    date_of_birth              {}/{}".format(
+                birth.get("month"), birth.get("year")))
+        address = _fmt_address(officer.get("address"))
+        if address:
+            print("    address                    {}".format(address))
+
+    print()
+    print("=" * 72)
+    print(" (*) ile isaretli alanlar bu scriptin teshis icin kullandiklaridir.")
+    print(" Tam ham yanit icin: --raw")
+    print(" Harcanan istek: {}".format(client.stats["requests"]))
+    print("=" * 72)
+    return 0
+
+
+# ====================================================================
+# BOLUM 14 - KOMUT SATIRI ARAYUZU
 # ====================================================================
 
 def build_arg_parser():
@@ -2313,6 +2423,17 @@ def build_arg_parser():
         ),
     )
     subparsers = parser.add_subparsers(dest="command", metavar="komut")
+
+    inspect = subparsers.add_parser(
+        "inspect",
+        help="Tek bir regnum icin Companies House'un dondurdugu her seyi gosterir.",
+        description="Tek bir sirket numarasi icin API'nin dondurdugu tum alanlari listeler. "
+                    "2 istek harcar.",
+    )
+    inspect.add_argument("regnum", help="Sirket numarasi, orn. 17107304")
+    inspect.add_argument("--raw", action="store_true",
+                         help="Ham JSON yanitini oldugu gibi bas.")
+    inspect.add_argument("-v", "--verbose", action="store_true", help="Ayrintili loglama.")
 
     check = subparsers.add_parser(
         "check",
@@ -2425,6 +2546,16 @@ def cli(argv=None):
     if args.verbose:
         log.setLevel(logging.DEBUG)
         logging.getLogger().setLevel(logging.DEBUG)
+
+    if args.command == "inspect":
+        try:
+            return inspect_company(args.regnum, args.raw)
+        except (EnvironmentError, CompaniesHouseAuthError, LookupFailed) as error:
+            log.error("%s", error)
+            return 1
+        except KeyboardInterrupt:
+            log.error("Kullanici tarafindan durduruldu.")
+            return 130
 
     if args.command == "check":
         try:

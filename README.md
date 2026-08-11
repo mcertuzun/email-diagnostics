@@ -82,6 +82,14 @@ python email_diagnostics.py check --input liste.csv
 
 `--skip-api` ile tamamen offline çalışır (test isteği bile atmaz).
 
+## Bir şirkette ne veri var, görmek için
+
+```bash
+python email_diagnostics.py inspect 17107304
+```
+
+O regnum için Companies House'un döndürdüğü **her alanı** listeler; script'in teşhis için fiilen kullandıkları `*` ile işaretlenir. `--raw` ham JSON'u basar. 2 istek harcar.
+
 ## Çalıştırma
 
 ```bash
