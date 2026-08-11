@@ -118,7 +118,7 @@ Girdi ve çıktı **`.xlsx` veya `.csv`** olabilir; uzantıya bakılarak otomati
 | `--sheet AD` | Excel sayfa adı (varsayılan: ilk sayfa) |
 | `--delimiter` | CSV ayracı — verilmezse `;` `,` sekme `\|` arasından tahmin edilir |
 | `--encoding` | CSV kodlaması — verilmezse `utf-8-sig`, `cp1254`, `cp1252` sırayla denenir |
-| `--mode` | `typo_first` (varsayılan) veya `ch_first` |
+| `--mode` | `ch_first` (varsayılan) veya `typo_first` — aşağıya bakın |
 | `--company-profile` | Resmî şirket adı + `company_dissolved` tespiti (şirket başına +1 istek) |
 | `--workers N` | Paralel thread sayısı (varsayılan 4) |
 | `--rate N` | Saniyedeki istek üst sınırı (varsayılan 1.8) |
@@ -151,9 +151,26 @@ CSV tarafında Türkiye/Avrupa Excel çıktıları da doğrudan çalışır: `;`
 1. **Yükleme + doğrulama** — zorunlu kolonlar eksikse hangilerinin eksik olduğunu söyleyen net bir hata verir.
 2. **Statü filtresi** — sadece bounce ailesi satırlar işlenir. `blocked` bilinçli olarak **hariçtir**: spam filtresi/IP reputation kaynaklıdır, adresin yanlışlığı veya kişinin ayrılmasıyla ilgisi yoktur.
 3. **Temizleme** — unvan (`Mr`, `Dr`), rol (`CEO`, `Director`), UK post-nominal (`MBE`, `FCA`) hem ad hem soyad alanından ayıklanır; parantezli lakaplar (`John (Jack)`) ayrı aday olarak saklanır; `last_name` tam ad içeriyorsa (`John Smith`) akıllıca bölünür; soyad ön ekleri (`van der`, `Mc`) korunur; şirket adından hukuki ekler atılır. **Orijinal değerler değiştirilmez**, temizlik yalnızca eşleştirme içindir.
-4. **Typo kontrolü** — e-posta local part'ı beklenen kalıplarla karşılaştırılır. Typo bulunursa satır burada biter, API çağrılmaz.
-5. **Companies House** — kalan satırlar için officer listesi sorgulanır, kişi **soyad öncelikli** eşleştirilir.
+4. **Companies House** — her satır için officer listesi sorgulanır, kişi **soyad öncelikli** eşleştirilir, resmî tam ad (orta adlar dahil) alınır.
+5. **E-posta kontrolü** — artık resmî isim elde olduğu için e-posta ona göre denetlenir.
 6. **Tek Excel çıktısı** + konsola sonuç dağılımı.
+
+### İki mod
+
+**`ch_first` (varsayılan).** Her satır Companies House'a gider: **N satır = N sorgu** (aynı regnum tekrar sorgulanmaz). Kişinin resmî adı alınıp e-posta ona göre denetlenir. Doğruluk kazancı somut — Excel'de `John Smith` yazan ama e-postası `john.andrew.smith@` olan bir kişi:
+
+| Mod | Sonuç |
+|---|---|
+| `typo_first` | `email_pattern_unrecognised` — orta adı bilmiyor |
+| `ch_first` | `email_matches_expected_pattern` — CH'den `Andrew` geldi |
+
+**`typo_first`.** Önce typo kontrolü; typo bulunan satır API'ye **hiç** gitmez. Kotayı korur, ama isim doğrulaması Excel'deki kirli veriye dayanır.
+
+### Sonuç önceliği (`ch_first`)
+
+`veri sorunu` (missing/malformed email) → `şirket kapalı / API hatası` → **`istifa`** → `typo` → `aktif`
+
+İstifa typo'dan önce gelir: kişi ayrıldıysa doğru yazılmış bir adres de bounce eder. `result_reason` her satırda e-posta değerlendirmesini taşır, yani iki bilgiyi birden alırsınız.
 
 ### Typo tespiti nasıl çalışıyor
 

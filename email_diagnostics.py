@@ -90,10 +90,12 @@ MAX_ROWS = None        # Orn. 50 -> sadece ilk 50 problemli satir islenir (test)
 MAX_COMPANIES = None   # Orn. 10 -> en fazla 10 BENZERSIZ regnum sorgulanir (kota testi)
 
 # LOOKUP_MODE:
-#   "typo_first" -> ONCE typo kontrolu, temiz satirlar API'ye gider (mevcut karar)
-#   "ch_first"   -> ONCE Companies House, resmi isim alinir, email ona gore denetlenir
-# Not: "ch_first" her satiri API'ye gonderir (daha yavas ama daha guvenilir isim).
-LOOKUP_MODE = "typo_first"
+#   "ch_first"   -> HER satir Companies House'a gider. Resmi isim (orta adlar
+#                   dahil) alinir, e-posta ona gore denetlenir. N satir = N sorgu.
+#                   Daha guvenilir, ama her satir kota harcar.
+#   "typo_first" -> Once typo kontrolu; typo bulunan satir API'ye HIC gitmez.
+#                   Kotayi korur, ama isim dogrulamasi Excel'deki kirli veriye dayanir.
+LOOKUP_MODE = "ch_first"
 
 # Sirket profili ek cagrisi (resmi sirket adi + dissolved durumu).
 # Sirket basina +1 istek demektir, bu yuzden varsayilan kapali.
@@ -1795,6 +1797,52 @@ def run_email_stage(context):
     return False
 
 
+def finalise_ch_first(context):
+    """
+    ch_first modu: Companies House sonucu alindiktan SONRA e-posta kontrolu.
+
+    Resmi ismin (ad + ORTA ADLAR + soyad) eslestirme havuzuna eklenmesi,
+    yalnizca eslesme GUVENLI ise yapilir. Belirsiz bir eslesmede yanlis
+    kisinin ismine gore "typo var" demek, kendinden emin yanlis teshis olur.
+
+    Sonuc onceligi:
+        veri sorunu > sirket kapali/hata > istifa > typo > aktif
+    Gerekce (result_reason) her zaman e-posta asamasindan gelir, boylece
+    her satirda hem officer durumu hem e-posta degerlendirmesi elde kalir.
+    """
+    ch_result = context["result"]
+    status = context["officer_status"]
+
+    # Resmi ismi yalnizca guvenli eslesmede kullan
+    if context["officer_name"] and status in ("active", "resigned"):
+        verified = resolve_person_name(context["officer_name"], "")
+        name = context["name"]
+        name["first_candidates"] |= verified["first_candidates"]
+        name["surname_variants"] |= verified["surname_variants"]
+        if verified["surname"]:
+            name["surname_variants"].add(verified["surname"])
+        for middle in verified["middles"]:
+            if middle and middle not in name["middles"]:
+                name["middles"].append(middle)
+
+    # E-posta kontrolu her satirda calisir; reason'i o belirler.
+    context["result"] = None
+    terminal = run_email_stage(context)
+    email_result = context["result"]
+
+    if email_result in (R.MISSING_EMAIL, R.MALFORMED_EMAIL):
+        context["result"] = email_result           # veri sorunu her seyin onunde
+    elif ch_result in (R.COMPANY_DISSOLVED, R.COMPANY_NOT_FOUND, R.LOOKUP_FAILED,
+                       R.MISSING_REGNUM, R.CH_SKIPPED):
+        context["result"] = ch_result              # sirket seviyesinde acik cevap
+    elif status == "resigned":
+        context["result"] = ch_result              # istifa bounce'u zaten acikliyor
+    elif terminal:
+        context["result"] = email_result           # aktif ama e-posta hatali -> typo
+    else:
+        context["result"] = ch_result              # aktif / possible / eslesme yok
+
+
 def fetch_company_data(client, company_numbers):
     """
     Benzersiz sirket numaralari icin officer (ve istege bagli profil) verisini
@@ -2116,6 +2164,11 @@ def main():
         log.warning("Companies House atlandi (--dry-run / --no-ch): %s satir "
                     "officer kontrolu yapilmadan isaretlendi.", len(pending))
         for context in pending:
+            # ch_first modunda e-posta asamasi normalde CH'den SONRA calisir.
+            # CH atlandiginda da typo analizini yapabiliriz - '--no-ch'in tum
+            # amaci zaten bu. Aksi halde her satir bos bir 'skipped' olurdu.
+            if LOOKUP_MODE == "ch_first":
+                run_email_stage(context)
             context["result"] = context["result"] or R.CH_SKIPPED
             context["officer_status"] = "not_checked"
     elif company_numbers or pending:
@@ -2128,12 +2181,8 @@ def main():
 
         for context in pending:
             apply_companies_house(context, company_data)
-            # ch_first modunda: resmi isim alindiktan SONRA email kontrolu
-            if LOOKUP_MODE == "ch_first" and context["officer_name"]:
-                verified = resolve_person_name(context["officer_name"], "")
-                context["name"]["first_candidates"] |= verified["first_candidates"]
-                if not context["result"] or context["result"].startswith(R.ACTIVE):
-                    run_email_stage(context)
+            if LOOKUP_MODE == "ch_first":
+                finalise_ch_first(context)
 
     # Emniyet: hicbir satir bos result ile kalmasin
     for context in contexts:
