@@ -1352,6 +1352,136 @@ class CompaniesHouseClient(object):
         return data
 
 
+def _clean_key_value(value):
+    """
+    Anahtarin etrafindaki bosluk ve tirnaklari atar.
+    Windows'ta `set CH_API_KEY="abc"` yazildiginda tirnaklar degerin
+    ICINE girer ve API 401 doner; bu sessiz hatanin onune gecer.
+    """
+    value = (value or "").strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("\"", "'"):
+        value = value[1:-1].strip()
+    return value
+
+
+def read_env_file(path):
+    """
+    Basit .env okuyucu (harici paket gerektirmez).
+    KEY=VALUE satirlarini dondurur; '#' ile baslayan satirlar yorumdur.
+    """
+    values = {}
+    if not os.path.isfile(path):
+        return values
+    try:
+        with io.open(path, "r", encoding="utf-8-sig") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _sep, value = line.partition("=")
+                key = key.strip()
+                if key.lower().startswith("export "):
+                    key = key[7:].strip()
+                values[key] = _clean_key_value(value)
+    except (IOError, UnicodeDecodeError):
+        pass
+    return values
+
+
+def get_api_key():
+    """
+    Companies House anahtarini sirayla arar:
+        1) Ortam degiskeni
+        2) Calisilan klasordeki .env
+        3) Scriptin yanindaki .env
+
+    Doner: (anahtar, kaynak_aciklamasi).  Bulunamazsa ("", "").
+    Anahtar hicbir zaman kod icine yazilmaz.
+    """
+    value = _clean_key_value(os.environ.get(CH_API_KEY_ENV, ""))
+    if value:
+        return value, "ortam degiskeni"
+
+    for path in env_file_candidates():
+        value = _clean_key_value(read_env_file(path).get(CH_API_KEY_ENV, ""))
+        if value:
+            return value, path
+    return "", ""
+
+
+def env_file_candidates():
+    """Aranacak .env yollari (ayni klasordeysek tekrar etmez)."""
+    paths = [
+        os.path.join(os.getcwd(), ".env"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"),
+    ]
+    unique = []
+    for path in paths:
+        if path not in unique:
+            unique.append(path)
+    return unique
+
+
+def _lookalike_env_vars():
+    """
+    Yazim/buyuk-kucuk harf hatasini yakalar: 'ch_api_key', 'CH_APIKEY',
+    'CH_API_KEY ' gibi degiskenler varsa kullaniciya soyler.
+    """
+    target = CH_API_KEY_ENV.replace("_", "").upper()
+    hits = []
+    for name in os.environ:
+        flat = name.strip().replace("_", "").replace("-", "").upper()
+        if name != CH_API_KEY_ENV and (flat == target or "COMPANIESHOUSE" in flat):
+            hits.append(name)
+    return sorted(hits)
+
+
+def api_key_help():
+    """Anahtar bulunamadiginda gosterilecek, tanilama iceren yardim metni."""
+    similar = _lookalike_env_vars()
+    lines = [
+        "Companies House anahtari bulunamadi.",
+        "",
+        "Arandigi yerler:",
+        "  1) {} ortam degiskeni".format(CH_API_KEY_ENV),
+    ]
+    for number, path in enumerate(env_file_candidates(), start=2):
+        lines.append("  {}) {}".format(number, path))
+    lines += [
+        "",
+        "Nasil ayarlanir:",
+        "  Windows (kalici) : setx {} \"anahtar\"".format(CH_API_KEY_ENV),
+        "                     >>> SONRA TERMINALI/VS CODE'U TAMAMEN KAPATIP AC <<<",
+        "                     setx yalnizca YENI acilan islemleri etkiler; VS Code",
+        "                     ortamini acildigi anda alir, yeni sekme yetmez.",
+        "  Windows (gecici) : set {}=anahtar        (tirnak KOYMA)".format(CH_API_KEY_ENV),
+        "  PowerShell       : $env:{}=\"anahtar\"".format(CH_API_KEY_ENV),
+        "  macOS / Linux    : export {}=\"anahtar\"".format(CH_API_KEY_ENV),
+        "",
+        "Alternatif - bu klasore '.env' adli bir dosya olusturup icine yaz:",
+        "  {}=anahtar".format(CH_API_KEY_ENV),
+        "  (.env dosyasi .gitignore'da, repoya gitmez)",
+        "",
+        "Anahtari almak icin: https://developer.company-information.service.gov.uk/",
+        "",
+        "Kontrol icin: python email_diagnostics.py check",
+    ]
+    if similar:
+        lines.insert(3, "  >>> Benzer isimli degisken(ler) BULUNDU: {}".format(", ".join(similar)))
+        lines.insert(4, "  >>> Isim tam olarak '{}' olmali (buyuk harf, alt cizgi)."
+                        .format(CH_API_KEY_ENV))
+    return "\n".join(lines)
+
+
+def mask_key(value):
+    """Anahtari loglarken maskele: ilk 4 ve son 2 karakter disinda gizle."""
+    if not value:
+        return "(yok)"
+    if len(value) <= 8:
+        return value[:2] + "*" * (len(value) - 2)
+    return "{}{}{}".format(value[:4], "*" * (len(value) - 6), value[-2:])
+
+
 def normalize_regnum(raw):
     """
     UK sirket numarasi 8 karakterdir. Excel '01234567' degerini sayiya
@@ -1880,14 +2010,10 @@ def main():
             context["officer_status"] = "not_checked"
             context["reason"] = context["reason"] or "dry_run"
     elif company_numbers or pending:
-        api_key = os.environ.get(CH_API_KEY_ENV, "").strip()
+        api_key, key_source = get_api_key()
         if not api_key:
-            raise EnvironmentError(
-                "{env} ortam degiskeni bulunamadi.\n"
-                "  Windows : setx {env} \"anahtar\"   (sonra yeni terminal ac)\n"
-                "  PowerShell: $env:{env}=\"anahtar\"\n"
-                "  macOS/Linux: export {env}=\"anahtar\"".format(env=CH_API_KEY_ENV)
-            )
+            raise EnvironmentError(api_key_help())
+        log.info("Companies House anahtari bulundu (kaynak: %s)", key_source)
         client = CompaniesHouseClient(api_key)
         company_data = fetch_company_data(client, company_numbers)
 
@@ -1918,7 +2044,140 @@ def main():
 
 
 # ====================================================================
-# BOLUM 12 - KOMUT SATIRI ARAYUZU
+# BOLUM 12 - KURULUM KONTROLU  (check komutu)
+# ====================================================================
+
+# Anahtarin gecerliligini sinamak icin kullanilan sirket numarasi.
+# Hangi numara oldugu onemli degil: 401/403 disinda HERHANGI bir yanit
+# (200 de 404 de) kimlik dogrulamanin gectigini kanitlar.
+CHECK_TEST_COMPANY = "00000006"
+
+
+def _mark(ok):
+    return "[OK]  " if ok else "[HATA]"
+
+
+def check_setup(input_path=None, skip_api=False, delimiter=None, encoding=None):
+    """
+    Kurulumu bastan sona dogrular ve nerede takildigini soyler.
+
+    Sirasiyla: Python surumu -> paketler -> API anahtari -> anahtar gecerli mi
+    -> (istege bagli) girdi dosyasi okunabiliyor mu, kolonlar tam mi.
+
+    Doner: 0 = her sey hazir, 1 = eksik var.
+    """
+    problems = []
+
+    print("=" * 68)
+    print(" KURULUM KONTROLU")
+    print("=" * 68)
+
+    # --- 1) Python ---
+    version = ".".join(str(n) for n in sys.version_info[:3])
+    ok_version = sys.version_info >= (3, 6)
+    print("%s Python %s  (%s)" % (_mark(ok_version), version, sys.platform))
+    if not ok_version:
+        problems.append("Python 3.6 veya uzeri gerekiyor.")
+
+    # --- 2) Paketler ---
+    for module, name in [(openpyxl, "openpyxl"), (requests, "requests")]:
+        installed = getattr(module, "__version__", "?")
+        print("%s %-9s %s" % (_mark(True), name, installed))
+
+    # --- 3) API anahtari ---
+    api_key, source = get_api_key()
+    if api_key:
+        print("%s Anahtar bulundu: %s   (kaynak: %s)"
+              % (_mark(True), mask_key(api_key), source))
+    else:
+        print("%s Anahtar bulunamadi" % _mark(False))
+        problems.append("api_key")
+
+    # --- 4) Anahtar gercekten calisiyor mu ---
+    if api_key and not skip_api:
+        print("      Companies House'a tek test istegi gonderiliyor...")
+        client = CompaniesHouseClient(api_key)
+        try:
+            client.get_company_profile(CHECK_TEST_COMPANY)
+            print("%s Anahtar gecerli, API erisimi calisiyor." % _mark(True))
+        except CompanyNotFound:
+            # 404 da kimlik dogrulamanin gectigini kanitlar
+            print("%s Anahtar gecerli, API erisimi calisiyor." % _mark(True))
+        except CompaniesHouseAuthError:
+            print("%s Anahtar REDDEDILDI (HTTP 401/403)." % _mark(False))
+            print("      Anahtari yanlis kopyalamis olabilirsin, ya da 'Live' yerine")
+            print("      'Test' anahtari kullaniyorsundur. Developer Hub'dan kontrol et.")
+            problems.append("api_key_invalid")
+        except LookupFailed as exc:
+            print("%s API'ye ulasilamadi: %s" % (_mark(False), exc))
+            print("      Internet baglantisi, proxy veya guvenlik duvari olabilir.")
+            print("      Kurumsal agdaysan HTTPS_PROXY ortam degiskenini ayarla.")
+            problems.append("api_unreachable")
+    elif api_key and skip_api:
+        print("      (--skip-api verildi, test istegi gonderilmedi)")
+
+    # --- 5) Girdi dosyasi ---
+    if input_path:
+        print("-" * 68)
+        print(" GIRDI DOSYASI: %s" % input_path)
+        print("-" * 68)
+        try:
+            _orig, normalized, rows, _meta = load_data(input_path, None, delimiter, encoding)
+            print("%s Dosya okundu: %s satir" % (_mark(True), len(rows)))
+
+            missing = [c for c in REQUIRED_COLUMNS if c not in normalized]
+            if missing:
+                print("%s Eksik kolon(lar): %s" % (_mark(False), ", ".join(missing)))
+                print("      Dosyadaki kolonlar: %s"
+                      % ", ".join(h for h in normalized if h))
+                problems.append("columns")
+            else:
+                print("%s Zorunlu kolonlarin hepsi var." % _mark(True))
+
+                status_index = normalized.index("status")
+                counts = {}
+                for row in rows:
+                    key = (row[status_index] or "(bos)").strip()
+                    counts[key] = counts.get(key, 0) + 1
+                problematic = sum(1 for row in rows
+                                  if is_problematic_status(row[status_index]))
+                print("%s Analiz edilecek satir: %s / %s"
+                      % (_mark(problematic > 0), problematic, len(rows)))
+                if problematic == 0:
+                    print("      Hicbir satir bounce ailesinde degil. Statu degerlerin:")
+                    problems.append("no_rows")
+                print("      Statu dagilimi:")
+                for value, count in sorted(counts.items(), key=lambda kv: -kv[1])[:12]:
+                    flag = "analiz edilir" if is_problematic_status(value) else "-"
+                    print("        %-28s %5s  %s" % (value[:28], count, flag))
+
+                regnum_index = normalized.index("regnum")
+                empty_regnum = sum(1 for row in rows if not (row[regnum_index] or "").strip())
+                if empty_regnum:
+                    print("      Uyari: %s satirda regnum bos." % empty_regnum)
+        except (IOError, ValueError) as exc:
+            print("%s Dosya okunamadi: %s" % (_mark(False), exc))
+            problems.append("input")
+
+    # --- Ozet ---
+    print("=" * 68)
+    if not problems:
+        print(" HER SEY HAZIR. Calistirmak icin:")
+        print("   python email_diagnostics.py triage --input liste.csv"
+              " --output sonuc.csv --verbose")
+        print("=" * 68)
+        return 0
+
+    print(" EKSIKLER VAR")
+    print("=" * 68)
+    if "api_key" in problems:
+        print()
+        print(api_key_help())
+    return 1
+
+
+# ====================================================================
+# BOLUM 13 - KOMUT SATIRI ARAYUZU
 # ====================================================================
 
 def build_arg_parser():
@@ -1934,16 +2193,36 @@ def build_arg_parser():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "ornekler:\n"
+            "  python email_diagnostics.py check\n"
+            "  python email_diagnostics.py check --input liste.csv\n"
             "  python email_diagnostics.py triage --input liste.csv --output sonuc.csv --verbose\n"
-            "  python email_diagnostics.py triage -i liste.xlsx -o sonuc.xlsx --limit 50 --dry-run\n"
-            "  python email_diagnostics.py triage -i liste.csv -o sonuc.csv --debug\n\n"
-            "Companies House anahtari {env} ortam degiskeninden okunur.\n"
-            "  Windows    : setx {env} \"anahtar\"   (sonra yeni terminal ac)\n"
+            "  python email_diagnostics.py triage -i liste.xlsx -o sonuc.xlsx --limit 50 --dry-run\n\n"
+            "Yeni bir bilgisayarda ONCE 'check' calistir: neyin eksik oldugunu soyler.\n\n"
+            "Companies House anahtari {env} ortam degiskeninden ya da .env dosyasindan okunur.\n"
+            "  Windows    : setx {env} \"anahtar\"   (sonra VS Code'u TAMAMEN kapatip ac)\n"
             "  PowerShell : $env:{env}=\"anahtar\"\n"
             "  macOS/Linux: export {env}=\"anahtar\"".format(env=CH_API_KEY_ENV)
         ),
     )
     subparsers = parser.add_subparsers(dest="command", metavar="komut")
+
+    check = subparsers.add_parser(
+        "check",
+        help="Kurulumu dogrular: paketler, API anahtari, girdi dosyasi.",
+        description="Kurulumu bastan sona dogrular ve nerede takildigini soyler. "
+                    "Yeni bir bilgisayarda once bunu calistir.",
+    )
+    check.add_argument("-i", "--input", default=None, metavar="YOL",
+                       help="Verilirse girdi dosyasi da kontrol edilir: okunabiliyor mu, "
+                            "zorunlu kolonlar var mi, kac satir analiz edilecek.")
+    check.add_argument("--skip-api", action="store_true",
+                       help="Anahtari sinamak icin test istegi gonderme (tamamen offline).")
+    check.add_argument("--delimiter", default=None, metavar="KARAKTER",
+                       help="CSV ayraci (varsayilan: otomatik tahmin).")
+    check.add_argument("--encoding", default=None, metavar="KODLAMA",
+                       help="CSV kodlamasi (varsayilan: otomatik tespit).")
+    check.add_argument("-v", "--verbose", action="store_true",
+                       help="Ayrintili loglama.")
 
     triage = subparsers.add_parser(
         "triage",
@@ -2023,6 +2302,17 @@ def cli(argv=None):
     if not getattr(args, "command", None):
         parser.print_help()
         return 2
+
+    if args.verbose:
+        log.setLevel(logging.DEBUG)
+        logging.getLogger().setLevel(logging.DEBUG)
+
+    if args.command == "check":
+        try:
+            return check_setup(args.input, args.skip_api, args.delimiter, args.encoding)
+        except KeyboardInterrupt:
+            log.error("Kullanici tarafindan durduruldu.")
+            return 130
 
     apply_cli_args(args)
     try:

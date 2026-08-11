@@ -28,16 +28,59 @@ Python 3.6.5 ve üzeri ile çalışır (`dataclasses`, f-string, walrus gibi 3.7
 
 ## Companies House API anahtarı
 
-Anahtar kodda **yazılı değildir**, ortam değişkeninden okunur.
+Anahtar kodda **yazılı değildir**. Script sırayla şuralara bakar:
+
+1. `CH_API_KEY` ortam değişkeni
+2. Çalıştığınız klasördeki `.env` dosyası
+3. Script'in yanındaki `.env` dosyası
 
 | Ortam | Komut |
 |---|---|
-| Windows (kalıcı) | `setx CH_API_KEY "anahtar"` — sonra yeni terminal aç |
-| Windows (geçici) | `set CH_API_KEY=anahtar` |
+| Windows (kalıcı) | `setx CH_API_KEY "anahtar"` |
+| Windows (geçici) | `set CH_API_KEY=anahtar` — tırnak koymayın |
 | PowerShell | `$env:CH_API_KEY="anahtar"` |
 | macOS / Linux | `export CH_API_KEY="anahtar"` |
 
+> **Windows'ta en sık yaşanan sorun:** `setx` sadece **yeni açılan** işlemleri etkiler. VS Code kullanıyorsanız yeni bir terminal sekmesi açmak yetmez — VS Code ortamını başlatıldığı anda alır, **tamamen kapatıp yeniden açmanız** gerekir.
+
+Uğraşmak istemiyorsanız alternatif: klasöre `.env` adlı bir dosya oluşturup içine tek satır yazın. Restart gerekmez, `.gitignore`'da olduğu için repoya da gitmez.
+
+```
+CH_API_KEY=buraya_anahtar
+```
+
 Anahtarı [Companies House Developer Hub](https://developer.company-information.service.gov.uk/) üzerinden bir "REST API" uygulaması oluşturarak alırsınız.
+
+## Önce kurulumu doğrulayın
+
+Yeni bir bilgisayarda ilk komut bu olsun:
+
+```bash
+python email_diagnostics.py check
+```
+
+Python sürümünü, paketleri ve API anahtarını sırayla kontrol eder; anahtar varsa Companies House'a **tek** test isteği atıp gerçekten çalıştığını doğrular. Eksik varsa nerede takıldığını ve nasıl düzelteceğinizi yazar.
+
+Girdi dosyanızı da kontrol ettirebilirsiniz — okunabiliyor mu, zorunlu kolonlar var mı, kaç satır analiz edilecek:
+
+```bash
+python email_diagnostics.py check --input liste.csv
+```
+
+```
+[OK]   Dosya okundu: 1240 satir
+[OK]   Zorunlu kolonlarin hepsi var.
+[OK]   Analiz edilecek satir: 183 / 1240
+      Statu dagilimi:
+        Delivered                      890  -
+        Opened                         167  -
+        Bounced                        142  analiz edilir
+        Blocked                         41  -
+        hard bounce                     41  analiz edilir
+      Uyari: 3 satirda regnum bos.
+```
+
+`--skip-api` ile tamamen offline çalışır (test isteği bile atmaz).
 
 ## Çalıştırma
 
