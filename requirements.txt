@@ -1,0 +1,4 @@
+# Python 3.6.5 uyumlu surumler sabitlendi.
+# Daha yeni Python kullaniyorsaniz surum kisitlarini kaldirabilirsiniz.
+openpyxl==3.0.10
+requests==2.27.1
