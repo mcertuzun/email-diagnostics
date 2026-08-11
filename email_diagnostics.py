@@ -45,6 +45,9 @@ API ANAHTARI (kodda ASLA yazili degil):
 
 from __future__ import print_function
 
+import argparse
+import csv
+import io
 import logging
 import os
 import re
@@ -71,9 +74,13 @@ except ImportError:  # pragma: no cover
 # ====================================================================
 
 # --- Dosya yollari -------------------------------------------------
-INPUT_FILE = r"contacts.xlsx"                    # okunacak dosya (.xlsx)
+# Bunlar VARSAYILANDIR; komut satirindan --input / --output ile ezilebilir:
+#   python email_diagnostics.py triage --input liste.csv --output sonuc.csv --verbose
+INPUT_FILE = r"contacts.xlsx"                    # .xlsx / .xlsm / .csv / .tsv
 OUTPUT_FILE = r"result_email_diagnostics.xlsx"   # yazilacak TEK dosya
 INPUT_SHEET = None                               # None = ilk sayfa, ya da "Sheet1"
+INPUT_DELIMITER = None                           # CSV ayraci; None = otomatik tahmin
+INPUT_ENCODING = None                            # CSV kodlamasi; None = otomatik tespit
 
 # --- Calisma modu --------------------------------------------------
 DEBUG = False          # True -> yardimci/denetim kolonlari da yazilir
@@ -431,18 +438,101 @@ def normalize_header(header):
     return re.sub(r"_+", "_", text).strip("_")
 
 
-def load_data(path, sheet_name=None):
-    """
-    Excel'i okur. pandas KULLANMAZ - tum degerler metin olarak alinir,
-    boylece regnum'un bastaki sifirlari ve tarih benzeri alanlar bozulmaz.
+def is_csv_path(path):
+    """Uzantiya bakarak CSV/TSV mi Excel mi oldugunu soyler."""
+    return os.path.splitext(path)[1].lower() in (".csv", ".tsv", ".txt")
 
-    Doner: (original_headers, normalized_headers, rows)
+
+def _sniff_delimiter(header_line):
+    """
+    Ayraci baslik satirindan tahmin eder.
+    Turkiye/Avrupa Excel ciktilari genelde ';' kullanir, bu yuzden ',' varsayimi yetmez.
+    """
+    counts = [(header_line.count(sep), sep) for sep in [";", ",", "\t", "|"]]
+    counts.sort(reverse=True)
+    return counts[0][1] if counts[0][0] > 0 else ","
+
+
+def _read_text_lines(path, encoding=None):
+    """
+    CSV'yi dogru kodlamayla okur.
+    Windows ciktilarinda utf-8-sig (BOM'lu) ve cp1254/cp1252 cok yaygindir.
+    """
+    encodings = [encoding] if encoding else ["utf-8-sig", "utf-8", "cp1254", "cp1252", "latin-1"]
+    last_error = None
+    for candidate in encodings:
+        try:
+            with io.open(path, "r", encoding=candidate, newline="") as handle:
+                content = handle.read()
+            if candidate != encodings[0]:
+                log.warning("Kodlama '%s' olarak algilandi.", candidate)
+            return content, candidate
+        except (UnicodeDecodeError, LookupError) as exc:
+            last_error = exc
+            continue
+    raise ValueError("Dosya kodlamasi cozulemedi: {}  ({})\n"
+                     "--encoding ile elle belirtebilirsin.".format(path, last_error))
+
+
+def _load_csv(path, delimiter=None, encoding=None):
+    """CSV/TSV okur. Tum degerler metin olarak kalir (regnum sifirlari korunur)."""
+    content, used_encoding = _read_text_lines(path, encoding)
+    if not content.strip():
+        raise ValueError("CSV dosyasi bos: {}".format(path))
+
+    first_line = content.split("\n", 1)[0]
+    sep = delimiter or _sniff_delimiter(first_line)
+    log.info("CSV okunuyor (ayrac=%r, kodlama=%s)", sep, used_encoding)
+
+    reader = csv.reader(io.StringIO(content), delimiter=sep)
+    try:
+        header_row = next(reader)
+    except StopIteration:
+        raise ValueError("CSV dosyasi bos: {}".format(path))
+
+    original_headers = [cell_to_text(cell) for cell in header_row]
+    while original_headers and not original_headers[-1]:
+        original_headers.pop()
+    if not original_headers:
+        raise ValueError("Baslik satiri bos.")
+    width = len(original_headers)
+
+    rows = []
+    for raw_row in reader:
+        values = [cell_to_text(cell) for cell in raw_row[:width]]
+        if len(values) < width:
+            values.extend([""] * (width - len(values)))
+        if not any(values):
+            continue
+        rows.append(values)
+
+    return original_headers, [normalize_header(h) for h in original_headers], rows, sep, used_encoding
+
+
+def load_data(path, sheet_name=None, delimiter=None, encoding=None):
+    """
+    Girdi dosyasini okur. Uzantiya gore CSV/TSV veya Excel.
+
+    pandas KULLANMAZ - tum degerler metin olarak alinir, boylece regnum'un
+    bastaki sifirlari ve tarih benzeri alanlar bozulmaz.
+
+    Doner: (original_headers, normalized_headers, rows, meta)
            rows -> her biri list(str), header ile ayni uzunlukta
+           meta -> {"delimiter": ..., "encoding": ...}  (CSV icin, Excel'de None)
     """
     if not os.path.isfile(path):
         raise IOError("Girdi dosyasi bulunamadi: {}".format(os.path.abspath(path)))
+
+    if is_csv_path(path):
+        headers, normalized, rows, sep, enc = _load_csv(path, delimiter, encoding)
+        log.info("Yuklendi: %s satir, %s kolon  (%s)",
+                 len(rows), len(headers), os.path.basename(path))
+        return headers, normalized, rows, {"delimiter": sep, "encoding": enc}
+
     if not path.lower().endswith((".xlsx", ".xlsm")):
-        raise ValueError("Sadece .xlsx / .xlsm okunabilir (.xls destegi yok): {}".format(path))
+        raise ValueError(
+            "Desteklenmeyen uzanti: {}\n"
+            "Okunabilenler: .xlsx, .xlsm, .csv, .tsv, .txt  (.xls destegi yok)".format(path))
 
     workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
     try:
@@ -482,7 +572,7 @@ def load_data(path, sheet_name=None):
         workbook.close()
 
     log.info("Yuklendi: %s satir, %s kolon  (%s)", len(rows), width, os.path.basename(path))
-    return original_headers, normalized_headers, rows
+    return original_headers, normalized_headers, rows, {"delimiter": None, "encoding": None}
 
 
 def validate_columns(normalized_headers, required=REQUIRED_COLUMNS):
@@ -1647,53 +1737,75 @@ DEBUG_COLUMNS = [
 ]
 
 
-def write_output(path, original_headers, contexts):
-    """
-    TEK Excel dosyasi yazar. Orijinal kolonlar aynen korunur,
-    sonuna yeni kolonlar eklenir. Girdi dosyasi ASLA degistirilmez.
-    """
+def _build_output_headers(original_headers):
     headers = list(original_headers) + list(OUTPUT_COLUMNS)
     if FETCH_COMPANY_PROFILE:
         headers.append("ch_company_name")
     if DEBUG:
         headers.extend(DEBUG_COLUMNS)
+    return headers
 
-    workbook = openpyxl.Workbook()
-    sheet = workbook.active
-    sheet.title = "diagnostics"
-    sheet.append(headers)
 
-    for context in contexts:
-        values = list(context["row"])
+def _build_output_row(context):
+    values = list(context["row"])
+    values.extend([
+        context["result"] or "",
+        context["reason"] or "",
+        context["officer_name"] or "",
+        context["officer_status"] or "",
+    ])
+    if FETCH_COMPANY_PROFILE:
+        values.append(context["company_name"] or "")
+    if DEBUG:
+        typo = context["typo"] or {}
+        name = context["name"]
         values.extend([
-            context["result"] or "",
-            context["reason"] or "",
-            context["officer_name"] or "",
-            context["officer_status"] or "",
+            name["first"],
+            " ".join(name["middles"]),
+            name["surname"],
+            " ".join(name["nicknames"]),
+            " ".join(context["company_tokens"]),
+            context["email"]["local"],
+            context["email"]["domain"],
+            typo.get("best_pattern", ""),
+            typo.get("best_distance", ""),
+            typo.get("domain_verdict", ""),
+            context["regnum"],
         ])
-        if FETCH_COMPANY_PROFILE:
-            values.append(context["company_name"] or "")
-        if DEBUG:
-            typo = context["typo"] or {}
-            name = context["name"]
-            values.extend([
-                name["first"],
-                " ".join(name["middles"]),
-                name["surname"],
-                " ".join(name["nicknames"]),
-                " ".join(context["company_tokens"]),
-                context["email"]["local"],
-                context["email"]["domain"],
-                typo.get("best_pattern", ""),
-                typo.get("best_distance", ""),
-                typo.get("domain_verdict", ""),
-                context["regnum"],
-            ])
-        sheet.append(values)
+    return values
 
-    sheet.freeze_panes = "A2"
+
+def write_output(path, original_headers, contexts, meta=None):
+    """
+    TEK cikti dosyasi yazar. Uzantiya gore CSV veya Excel.
+    Orijinal kolonlar aynen korunur, sonuna yeni kolonlar eklenir.
+    Girdi dosyasi ASLA degistirilmez.
+
+    meta -> {"delimiter":..., "encoding":...}; CSV ciktisinda girdiyle
+    ayni ayrac kullanilir, kodlama Excel uyumlulugu icin utf-8-sig olur.
+    """
+    headers = _build_output_headers(original_headers)
+    meta = meta or {}
+
     try:
-        workbook.save(path)
+        if is_csv_path(path):
+            sep = meta.get("delimiter") or ","
+            # utf-8-sig: Excel'in Turkce karakterleri dogru acmasi icin BOM sart
+            with io.open(path, "w", encoding="utf-8-sig", newline="") as handle:
+                writer = csv.writer(handle, delimiter=sep, quoting=csv.QUOTE_MINIMAL)
+                writer.writerow(headers)
+                for context in contexts:
+                    writer.writerow([("" if v is None else v)
+                                     for v in _build_output_row(context)])
+        else:
+            workbook = openpyxl.Workbook()
+            sheet = workbook.active
+            sheet.title = "diagnostics"
+            sheet.append(headers)
+            for context in contexts:
+                sheet.append(_build_output_row(context))
+            sheet.freeze_panes = "A2"
+            workbook.save(path)
     except IOError as exc:
         raise IOError(
             "Cikti dosyasi yazilamadi: {}\n"
@@ -1727,10 +1839,11 @@ def main():
 
     # --- Guvenlik: girdi dosyasinin uzerine yazma ---
     if os.path.abspath(INPUT_FILE) == os.path.abspath(OUTPUT_FILE):
-        raise ValueError("OUTPUT_FILE, INPUT_FILE ile ayni olamaz. Girdi dosyasi korunmalidir.")
+        raise ValueError("Cikti dosyasi girdi dosyasiyla ayni olamaz. Girdi korunmalidir.")
 
     # --- STEP 1 ---
-    original_headers, normalized_headers, rows = load_data(INPUT_FILE, INPUT_SHEET)
+    original_headers, normalized_headers, rows, meta = load_data(
+        INPUT_FILE, INPUT_SHEET, INPUT_DELIMITER, INPUT_ENCODING)
     index_map = validate_columns(normalized_headers)
 
     # --- STEP 2 ---
@@ -1740,7 +1853,7 @@ def main():
         log.warning("MAX_ROWS aktif: sadece ilk %s satir islenecek.", MAX_ROWS)
     if not problematic:
         log.warning("Problemli statuye sahip satir yok. Bos cikti yazilacak.")
-        write_output(OUTPUT_FILE, original_headers, [])
+        write_output(OUTPUT_FILE, original_headers, [], meta)
         return
 
     # --- STEP 3 + 4 ---
@@ -1792,18 +1905,136 @@ def main():
         if not context["result"]:
             context["result"] = R.NO_OFFICER
 
+    # --verbose: her satirin karari tek tek loglanir
+    for context in contexts:
+        log.debug("%-40s -> %-34s %s",
+                  context["email"]["email"] or "(email yok)",
+                  context["result"], context["reason"] or "")
+
     # --- STEP 7 ---
-    write_output(OUTPUT_FILE, original_headers, contexts)
+    write_output(OUTPUT_FILE, original_headers, contexts, meta)
     print_summary(contexts)
     log.info("Tamamlandi: %.1f saniye", time.time() - start_time)
 
 
-if __name__ == "__main__":
+# ====================================================================
+# BOLUM 12 - KOMUT SATIRI ARAYUZU
+# ====================================================================
+
+def build_arg_parser():
+    """
+    Kullanim:
+        python email_diagnostics.py triage --input liste.csv --output sonuc.csv --verbose
+
+    Girdi ve cikti .xlsx veya .csv olabilir; uzantiya gore otomatik secilir.
+    """
+    parser = argparse.ArgumentParser(
+        prog="email_diagnostics.py",
+        description="Bounce eden e-posta satirlarini teshis eder ve TEK bir cikti dosyasi yazar.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "ornekler:\n"
+            "  python email_diagnostics.py triage --input liste.csv --output sonuc.csv --verbose\n"
+            "  python email_diagnostics.py triage -i liste.xlsx -o sonuc.xlsx --limit 50 --dry-run\n"
+            "  python email_diagnostics.py triage -i liste.csv -o sonuc.csv --debug\n\n"
+            "Companies House anahtari {env} ortam degiskeninden okunur.\n"
+            "  Windows    : setx {env} \"anahtar\"   (sonra yeni terminal ac)\n"
+            "  PowerShell : $env:{env}=\"anahtar\"\n"
+            "  macOS/Linux: export {env}=\"anahtar\"".format(env=CH_API_KEY_ENV)
+        ),
+    )
+    subparsers = parser.add_subparsers(dest="command", metavar="komut")
+
+    triage = subparsers.add_parser(
+        "triage",
+        help="Girdi dosyasini analiz edip sonuc dosyasini yazar.",
+        description="Girdi dosyasini analiz edip sonuc dosyasini yazar.",
+    )
+    triage.add_argument("-i", "--input", default=INPUT_FILE, metavar="YOL",
+                        help="Girdi dosyasi (.xlsx / .xlsm / .csv / .tsv). "
+                             "Varsayilan: %(default)s")
+    triage.add_argument("-o", "--output", default=OUTPUT_FILE, metavar="YOL",
+                        help="Cikti dosyasi. Uzantiya gore CSV veya Excel yazilir. "
+                             "Varsayilan: %(default)s")
+    triage.add_argument("--sheet", default=INPUT_SHEET, metavar="AD",
+                        help="Excel sayfa adi (varsayilan: ilk sayfa).")
+    triage.add_argument("--delimiter", default=None, metavar="KARAKTER",
+                        help="CSV ayraci. Verilmezse baslik satirindan tahmin edilir "
+                             "(; , sekme | arasindan).")
+    triage.add_argument("--encoding", default=None, metavar="KODLAMA",
+                        help="CSV kodlamasi. Verilmezse utf-8-sig, cp1254, cp1252 sirayla denenir.")
+
+    triage.add_argument("-v", "--verbose", action="store_true",
+                        help="Her satirin kararini tek tek yazar (DEBUG loglama).")
+    triage.add_argument("--debug", action="store_true",
+                        help="Cikti dosyasina denetim kolonlarini da ekler.")
+    triage.add_argument("--dry-run", action="store_true",
+                        help="Companies House'a hic gitmez. Offline test icin.")
+    triage.add_argument("--limit", type=int, default=MAX_ROWS, metavar="N",
+                        help="Sadece ilk N problemli satiri isler. Kota yakmadan deneme icin.")
+
+    triage.add_argument("--mode", choices=["typo_first", "ch_first"], default=LOOKUP_MODE,
+                        help="typo_first: once typo kontrolu, temiz satirlar API'ye gider. "
+                             "ch_first: once resmi isim alinir, e-posta ona gore denetlenir. "
+                             "Varsayilan: %(default)s")
+    triage.add_argument("--company-profile", action="store_true", default=FETCH_COMPANY_PROFILE,
+                        help="Resmi sirket adi ve dissolved durumunu da ceker "
+                             "(sirket basina +1 istek).")
+    triage.add_argument("--workers", type=int, default=CH_WORKERS, metavar="N",
+                        help="Paralel Companies House thread sayisi. Varsayilan: %(default)s")
+    triage.add_argument("--rate", type=float, default=CH_RATE_LIMIT_PER_SEC, metavar="N",
+                        help="Saniyedeki istek ust siniri. Resmi limit 600/5dk = 2.0. "
+                             "Varsayilan: %(default)s")
+    return parser
+
+
+def apply_cli_args(args):
+    """CLI argumanlarini modul ayarlarina uygular."""
+    global INPUT_FILE, OUTPUT_FILE, INPUT_SHEET, INPUT_DELIMITER, INPUT_ENCODING
+    global DEBUG, DRY_RUN, MAX_ROWS, LOOKUP_MODE, FETCH_COMPANY_PROFILE
+    global CH_WORKERS, CH_RATE_LIMIT_PER_SEC
+
+    INPUT_FILE = args.input
+    OUTPUT_FILE = args.output
+    INPUT_SHEET = args.sheet
+    INPUT_DELIMITER = args.delimiter
+    INPUT_ENCODING = args.encoding
+
+    DEBUG = bool(args.debug)
+    DRY_RUN = bool(args.dry_run)
+    MAX_ROWS = args.limit
+    LOOKUP_MODE = args.mode
+    FETCH_COMPANY_PROFILE = bool(args.company_profile)
+    CH_WORKERS = max(1, int(args.workers))
+    CH_RATE_LIMIT_PER_SEC = max(0.1, float(args.rate))
+
+    if args.verbose:
+        log.setLevel(logging.DEBUG)
+        logging.getLogger().setLevel(logging.DEBUG)
+        log.debug("Ayarlar: mode=%s workers=%s rate=%.1f/sn debug=%s dry_run=%s limit=%s",
+                  LOOKUP_MODE, CH_WORKERS, CH_RATE_LIMIT_PER_SEC, DEBUG, DRY_RUN, MAX_ROWS)
+
+
+def cli(argv=None):
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
+
+    # Alt komut verilmediyse yardimi goster (Python 3.6'da subparser zorunlu degil)
+    if not getattr(args, "command", None):
+        parser.print_help()
+        return 2
+
+    apply_cli_args(args)
     try:
         main()
     except (ValueError, IOError, EnvironmentError, CompaniesHouseAuthError) as error:
         log.error("%s", error)
-        sys.exit(1)
+        return 1
     except KeyboardInterrupt:
         log.error("Kullanici tarafindan durduruldu.")
-        sys.exit(130)
+        return 130
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(cli())

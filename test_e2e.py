@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 """Ucdan uca test: gercek .xlsx olustur, pipeline'i calistir, ciktiyi dogrula."""
+import csv
+import io
 import os
 import sys
 
@@ -126,6 +128,61 @@ if any(not r[result_idx] for r in data):
     problems.append("Bos result iceren satir var")
 else:
     print("OK   her satirin bir result degeri var")
+
+# ------------------------------------------------------------------
+# 4) CSV yolu + komut satiri arayuzu
+#    Windows tarzi zor bir CSV: ';' ayrac, cp1254 kodlama, Turkce karakter
+# ------------------------------------------------------------------
+print()
+print("=" * 78)
+print("CSV + CLI TESTI")
+print("=" * 78)
+
+CSV_IN = os.path.join(HERE, "liste_test.csv")
+CSV_OUT = os.path.join(HERE, "liste_test_sonuc.csv")
+csv_rows = [
+    "first_name;last_name;email;company;regnum;status",
+    "Mr John;Smith;jhon.smith@acme.co.uk;Acme Trading Ltd;01234567;Bounced",
+    "Mehmet;Öztürk;m.ozturk@avz.co.uk;Ali Veli Zeynep Ltd;07654321;bounced back",
+    "Şükrü;Yılmaz;info@acme.co.uk;Acme Trading Ltd;01234567;hard bounce",
+    "Kate;Wilson;kate.wilson@acme.co.uk;Acme Trading Ltd;01234567;Delivered",
+]
+io.open(CSV_IN, "w", encoding="cp1254", newline="").write("\r\n".join(csv_rows) + "\r\n")
+
+exit_code = ED.cli(["triage", "--input", CSV_IN, "--output", CSV_OUT,
+                    "--verbose", "--dry-run"])
+if exit_code != 0:
+    problems.append("CLI sifirdan farkli cikis kodu dondurdu: %s" % exit_code)
+else:
+    print("OK   CLI cikis kodu 0")
+
+with io.open(CSV_OUT, "r", encoding="utf-8-sig", newline="") as handle:
+    out_rows = list(csv.reader(handle, delimiter=";"))
+
+if len(out_rows) != 4:              # 1 baslik + 3 problemli satir
+    problems.append("CSV cikti satir sayisi: beklenen 4, gelen %d" % len(out_rows))
+else:
+    print("OK   ';' ayraci otomatik algilandi ve ciktida korundu")
+
+if out_rows[0][:6] != ["first_name", "last_name", "email", "company", "regnum", "status"]:
+    problems.append("CSV basliklari korunmadi: %r" % out_rows[0][:6])
+else:
+    print("OK   CSV orijinal kolonlari korundu")
+
+turkish = [r[1] for r in out_rows[1:]]
+if "Öztürk" not in turkish or "Yılmaz" not in turkish:
+    problems.append("Turkce karakterler bozuldu: %r" % turkish)
+else:
+    print("OK   cp1254 -> utf-8-sig donusumunde Turkce karakterler korundu")
+
+csv_result_idx = out_rows[0].index("result")
+if out_rows[1][csv_result_idx] != ED.R.FIRST_NAME_TYPO:
+    problems.append("CSV teshisi hatali: %r" % out_rows[1][csv_result_idx])
+else:
+    print("OK   CSV yolunda teshis dogru uretildi")
+
+os.remove(CSV_IN)
+os.remove(CSV_OUT)
 
 print()
 print("=" * 78)

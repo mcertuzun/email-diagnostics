@@ -41,19 +41,55 @@ Anahtarı [Companies House Developer Hub](https://developer.company-information.
 
 ## Çalıştırma
 
-`email_diagnostics.py` dosyasının en üstündeki ayar bloğunda `INPUT_FILE` ve `OUTPUT_FILE` yollarını düzenleyin, sonra:
+```bash
+python email_diagnostics.py triage --input liste.csv --output liste_sonuc.csv --verbose
+```
+
+Windows'ta:
 
 ```bash
-python email_diagnostics.py
+python email_diagnostics.py triage --input "C:\Users\adiniz\Downloads\liste.csv" --output "C:\Users\adiniz\Downloads\liste_sonuc.csv" --verbose
+```
+
+Girdi ve çıktı **`.xlsx` veya `.csv`** olabilir; uzantıya bakılarak otomatik seçilir. İkisi farklı da olabilir (CSV oku, Excel yaz).
+
+### Bayraklar
+
+| Bayrak | Ne yapar |
+|---|---|
+| `-i`, `--input` | Girdi dosyası (`.xlsx` / `.xlsm` / `.csv` / `.tsv`) |
+| `-o`, `--output` | Çıktı dosyası — uzantısına göre CSV veya Excel yazılır |
+| `-v`, `--verbose` | Her satırın kararını tek tek yazar |
+| `--debug` | Çıktıya 11 denetim kolonu ekler |
+| `--dry-run` | Companies House'a hiç gitmez — offline test |
+| `--limit N` | Sadece ilk N problemli satırı işler — kota yakmadan deneme |
+| `--sheet AD` | Excel sayfa adı (varsayılan: ilk sayfa) |
+| `--delimiter` | CSV ayracı — verilmezse `;` `,` sekme `\|` arasından tahmin edilir |
+| `--encoding` | CSV kodlaması — verilmezse `utf-8-sig`, `cp1254`, `cp1252` sırayla denenir |
+| `--mode` | `typo_first` (varsayılan) veya `ch_first` |
+| `--company-profile` | Resmî şirket adı + `company_dissolved` tespiti (şirket başına +1 istek) |
+| `--workers N` | Paralel thread sayısı (varsayılan 4) |
+| `--rate N` | Saniyedeki istek üst sınırı (varsayılan 1.8) |
+
+Bayrak verilmezse dosyanın en üstündeki varsayılanlar kullanılır.
+
+İlk deneme için önerilen komut — kotayı hiç harcamaz:
+
+```bash
+python email_diagnostics.py triage -i liste.csv -o deneme.csv --limit 50 --dry-run --debug --verbose
 ```
 
 ### Girdi dosyası
 
-`.xlsx` / `.xlsm`, ilk satır başlık. Şu kolonlar zorunlu (büyük/küçük harf, boşluk ve BOM farkları tolere edilir):
+İlk satır başlık. Şu kolonlar zorunlu (büyük/küçük harf, boşluk ve BOM farkları tolere edilir):
 
 `first_name` · `last_name` · `email` · `company` · `regnum` · `status`
 
 `regnum` = Companies House şirket numarası. `status` = gönderim durumu.
+
+CSV tarafında Türkiye/Avrupa Excel çıktıları da doğrudan çalışır: `;` ayracı ve `cp1254`/`cp1252` kodlaması otomatik algılanır, çıktı Excel'in Türkçe karakterleri doğru açması için `utf-8-sig` (BOM'lu) yazılır.
+
+> **Not:** CSV çıktısını Excel'de açarsanız Excel `01234567` gibi `regnum` değerlerini yine sayıya çevirip baştaki sıfırı gizleyebilir. Bu Excel'in davranışıdır, dosyanın içeriği doğrudur — sorun yaşarsanız çıktıyı `.xlsx` olarak alın.
 
 ---
 
@@ -124,16 +160,17 @@ Orijinal kolonların tamamı korunur, sonlarına eklenir:
 
 Hepsi dosyanın en üstünde:
 
+Çoğu ayarın komut satırı karşılığı var (yukarıdaki tabloya bakın). Yalnızca dosyadan değiştirilebilenler:
+
 | Ayar | Ne işe yarar |
 |---|---|
-| `DEBUG` | Denetim kolonlarını ekler |
-| `DRY_RUN` | Companies House'a hiç gitmez — offline test |
-| `MAX_ROWS` | Sadece ilk N satırı işler — kotayı yakmadan deneme |
-| `LOOKUP_MODE` | `typo_first` (varsayılan) veya `ch_first` (önce resmî isim alınır, e-posta ona göre denetlenir) |
-| `FETCH_COMPANY_PROFILE` | Resmî şirket adı + `company_dissolved` tespiti (şirket başına +1 istek) |
 | `PROBLEMATIC_STATUS_KEYWORDS` | Hangi statülerin analiz edileceği |
+| `EXCLUDED_STATUS_KEYWORDS` | Hangi statülerin dışlanacağı (`blocked` burada) |
 | `NICKNAME_GROUPS` | Lakap sözlüğü — istediğiniz kadar genişletin |
 | `TYPO_MAX_DISTANCE_*` | Typo eşikleri |
+| `GENERIC_MAILBOXES` | `info@`, `accounts@` gibi kişiye ait olmayan kutular |
+| `COMPANY_STOPWORDS` | Şirket adından atılacak hukuki ekler |
+| `FREE_EMAIL_DOMAINS` | Kişisel e-posta sağlayıcıları |
 
 ## Rate limit ve performans
 
