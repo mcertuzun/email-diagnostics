@@ -1471,21 +1471,108 @@ def get_api_key():
     for path in env_file_candidates():
         value = _clean_key_value(read_env_file(path).get(CH_API_KEY_ENV, ""))
         if value:
+            if os.path.basename(path) != ".env":
+                log.warning("Anahtar '%s' dosyasindan okundu. Dosya adi '.env' "
+                            "olmali - Windows'ta Not Defteri sessizce '.txt' ekler.",
+                            os.path.basename(path))
             return value, path
     return "", ""
 
 
-def env_file_candidates():
-    """Aranacak .env yollari (ayni klasordeysek tekrar etmez)."""
-    paths = [
-        os.path.join(os.getcwd(), ".env"),
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"),
-    ]
+def describe_env_search():
+    """
+    Anahtar aramasinin NE BULDUGUNU satir satir anlatir.
+    'bulunamadi' demek yerine nerede ne oldugunu gostermek icin.
+    """
+    lines = []
+    raw = os.environ.get(CH_API_KEY_ENV)
+    if raw is None:
+        lines.append("  [yok]  {} ortam degiskeni tanimli degil".format(CH_API_KEY_ENV))
+    elif not _clean_key_value(raw):
+        lines.append("  [BOS]  {} tanimli ama degeri bos".format(CH_API_KEY_ENV))
+    else:
+        lines.append("  [VAR]  {} ortam degiskeni".format(CH_API_KEY_ENV))
+
+    seen_any_file = False
+    for path in env_file_candidates():
+        if not os.path.isfile(path):
+            continue
+        seen_any_file = True
+        values = read_env_file(path)
+        if CH_API_KEY_ENV in values and values[CH_API_KEY_ENV]:
+            lines.append("  [VAR]  {}".format(path))
+        elif values:
+            lines.append("  [!]    {} bulundu ama icinde {} yok. "
+                         "Icindeki anahtarlar: {}"
+                         .format(path, CH_API_KEY_ENV, ", ".join(sorted(values)) or "(hicbiri)"))
+        else:
+            lines.append("  [!]    {} bulundu ama okunabilir KEY=VALUE satiri yok"
+                         .format(path))
+    if not seen_any_file:
+        lines.append("  [yok]  Su klasorlerde .env dosyasi yok:")
+        for directory in env_search_dirs():
+            lines.append("           {}".format(directory))
+
+    lookalikes = find_env_lookalikes()
+    if lookalikes:
+        lines.append("")
+        lines.append("  >>> Adinda 'env' gecen su dosyalari gordum:")
+        for path in lookalikes:
+            lines.append("        {}".format(path))
+        lines.append("  >>> Windows Gezgin uzantilari GIZLER: '.env' sandigin dosya")
+        lines.append("      diskte '.env.txt' olabilir. Gezgin'de Gorunum > Dosya adi")
+        lines.append("      uzantilari kutusunu isaretleyip kontrol et.")
+    return lines
+
+
+# Windows'ta Not Defteri "Farkli kaydet" ile dosyaya sessizce .txt ekler ve
+# Gezgin uzantiyi gizledigi icin kullanici dosyayi '.env' saniyor. Bu yuzden
+# yaygin yanlis adlari da kabul ediyoruz - dogrusunu soyleyip devam etmek,
+# kullaniciyi bir saat dosya adiyla ugrastirmaktan iyidir.
+ENV_FILE_NAMES = [".env", ".env.txt", "env.txt", "env", ".env.env"]
+
+
+def env_search_dirs():
+    """Icinde .env aranacak klasorler (tekrarsiz)."""
+    dirs = [os.getcwd(), os.path.dirname(os.path.abspath(__file__))]
     unique = []
-    for path in paths:
+    for path in dirs:
+        path = os.path.abspath(path)
         if path not in unique:
             unique.append(path)
     return unique
+
+
+def env_file_candidates():
+    """Aranacak tum .env yollari (klasor x olasi dosya adi)."""
+    paths = []
+    for directory in env_search_dirs():
+        for name in ENV_FILE_NAMES:
+            candidate = os.path.join(directory, name)
+            if candidate not in paths:
+                paths.append(candidate)
+    return paths
+
+
+def find_env_lookalikes():
+    """
+    Aranan klasorlerde adinda 'env' gecen ama tam olarak '.env' OLMAYAN
+    dosyalari bulur. Windows'un ekledigi gizli '.txt' uzantisini yakalar.
+    """
+    hits = []
+    for directory in env_search_dirs():
+        try:
+            entries = os.listdir(directory)
+        except OSError:
+            continue
+        for entry in entries:
+            if entry == ".env":
+                continue
+            if "env" in entry.lower() and len(entry) <= 24:
+                full = os.path.join(directory, entry)
+                if os.path.isfile(full):
+                    hits.append(full)
+    return sorted(set(hits))
 
 
 def _lookalike_env_vars():
@@ -1505,14 +1592,8 @@ def _lookalike_env_vars():
 def api_key_help():
     """Anahtar bulunamadiginda gosterilecek, tanilama iceren yardim metni."""
     similar = _lookalike_env_vars()
-    lines = [
-        "Companies House anahtari bulunamadi.",
-        "",
-        "Arandigi yerler:",
-        "  1) {} ortam degiskeni".format(CH_API_KEY_ENV),
-    ]
-    for number, path in enumerate(env_file_candidates(), start=2):
-        lines.append("  {}) {}".format(number, path))
+    lines = ["Companies House anahtari bulunamadi.", "", "ARAMA SONUCU:"]
+    lines.extend(describe_env_search())
     lines += [
         "",
         "Nasil ayarlanir:",
@@ -2275,6 +2356,8 @@ def check_setup(input_path=None, skip_api=False, delimiter=None, encoding=None):
               % (_mark(True), mask_key(api_key), source))
     else:
         print("%s Anahtar bulunamadi" % _mark(False))
+        for line in describe_env_search():
+            print(line)
         problems.append("api_key")
 
     # --- 4) Anahtar gercekten calisiyor mu ---

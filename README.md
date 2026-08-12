@@ -43,10 +43,27 @@ Anahtar kodda **yazılı değildir**. Script sırayla şuralara bakar:
 
 > **Windows'ta en sık yaşanan sorun:** `setx` sadece **yeni açılan** işlemleri etkiler. VS Code kullanıyorsanız yeni bir terminal sekmesi açmak yetmez — VS Code ortamını başlatıldığı anda alır, **tamamen kapatıp yeniden açmanız** gerekir.
 
-Uğraşmak istemiyorsanız alternatif: klasöre `.env` adlı bir dosya oluşturup içine tek satır yazın. Restart gerekmez, `.gitignore`'da olduğu için repoya da gitmez.
+Uğraşmak istemiyorsanız alternatif: script'in yanına `.env` adlı bir dosya oluşturup içine tek satır yazın. Restart gerekmez, `.gitignore`'da olduğu için repoya da gitmez.
 
 ```
 CH_API_KEY=buraya_anahtar
+```
+
+> **Windows'ta en sık ikinci sorun:** Not Defteri "Farklı kaydet" ile dosyaya sessizce `.txt` ekler, Gezgin de uzantıları gizlediği için dosya size `.env` görünür ama diskte `.env.txt`'tir. Script bu tuzağa düşmemek için `.env.txt` / `env.txt` adlarını da kabul eder ve kullandığında uyarır.
+>
+> Dosyayı hatasız oluşturmak için PowerShell'de:
+>
+> ```powershell
+> Set-Content -Path .env -Value "CH_API_KEY=buraya_anahtar"
+> ```
+
+Anahtar bulunamazsa script **nerede ne bulduğunu** satır satır söyler — hangi klasörlere baktığını, `.env` dosyasının içinde hangi anahtarların olduğunu, adında `env` geçen başka dosya görüp görmediğini:
+
+```
+[HATA] Anahtar bulunamadi
+  [yok]  CH_API_KEY ortam degiskeni tanimli degil
+  [!]    C:\Users\...\.env bulundu ama icinde CH_API_KEY yok.
+         Icindeki anahtarlar: COMPANIES_HOUSE_KEY
 ```
 
 Anahtarı [Companies House Developer Hub](https://developer.company-information.service.gov.uk/) üzerinden bir "REST API" uygulaması oluşturarak alırsınız.
