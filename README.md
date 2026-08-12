@@ -51,6 +51,14 @@ CH_API_KEY=buraya_anahtar
 
 Anahtarı [Companies House Developer Hub](https://developer.company-information.service.gov.uk/) üzerinden bir "REST API" uygulaması oluşturarak alırsınız.
 
+## Hangi sürümü çalıştırıyorsunuz?
+
+```bash
+python email_diagnostics.py --version
+```
+
+Beklenmedik bir `unrecognized arguments` hatası alıyorsanız neredeyse her zaman sebebi eski dosyadır — `git pull` yapıp sürümü kontrol edin.
+
 ## Önce kurulumu doğrulayın
 
 Yeni bir bilgisayarda ilk komut bu olsun:
@@ -303,6 +311,26 @@ Companies House'ta **officer'ları toplu indirmenin bir yolu yok.** `/company/{r
 | [Accounts Data Product](https://download.companieshouse.gov.uk/en_accountsdata.html) | Elektronik sunulan finansal tablolar | Hayır |
 
 **Ama Free Company Data Product yine de işinize yarar:** aylık ücretsiz bir CSV olarak tüm şirketlerin numarasını, resmî adını ve durumunu (`active` / `dissolved`) içerir. Bunu indirip yerelden okursanız `--company-profile`'ın yaptığı işi **sıfır API isteğiyle** yaparsınız — resmî şirket adı ve kapanmış şirket tespiti bedavaya gelir. Bu entegrasyon henüz yazılmadı; ihtiyaç olursa eklenebilir.
+
+## API hatası alıyorsam?
+
+`companies_house_lookup_failed` gördüğünüzde script artık **gerçek sebebi** yazar:
+
+```
+WARNING  01234567 sorgulanamadi: HTTP 500
+WARNING  07654321 sorgulanamadi: baglanti: baglanti zaman asimi
+WARNING    Basarisiz sorgular (sebep -> adet):
+WARNING      failed: HTTP 500                          12
+WARNING      not_found                                  3
+```
+
+| Belirti | Anlamı |
+|---|---|
+| `HTTP 401` / `403` | Anahtar reddedildi — çalışma anında durur. `check` ile doğrulayın |
+| `HTTP 404` → `company_not_found` | O regnum sicilde yok. Baştaki sıfır kaybı olabilir — `--debug` ile `dbg_regnum_used` kolonuna bakın |
+| `HTTP 429` | Rate limit. `--rate` düşürün (varsayılan 1.8/sn) |
+| `HTTP 5xx` | Companies House tarafında geçici arıza; 3 kez denenir |
+| `baglanti: ...` | Ağ/proxy/güvenlik duvarı. Kurumsal ağdaysanız `HTTPS_PROXY` ayarlayın |
 
 ## Bilinen sınırlar
 

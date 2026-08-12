@@ -272,6 +272,10 @@ logging.basicConfig(
 )
 log = logging.getLogger("diagnostics")
 
+# Surum: 'python email_diagnostics.py --version' ile dogrulanir.
+# Windows'ta eski dosyayi calistirmak en sik karisiklik sebebi.
+__version__ = "1.4.0"
+
 
 # ====================================================================
 # BOLUM 1 - SABIT SONUC DEGERLERI
@@ -1880,8 +1884,11 @@ def fetch_company_data(client, company_numbers):
             entry["error"] = "not_found"
         except LookupFailed as exc:
             entry["error"] = "failed: {}".format(exc)
+            log.warning("%s sorgulanamadi: %s", company_number, exc)
         except Exception as exc:                      # beklenmeyen yanit yapisi vb.
             entry["error"] = "failed: {}".format(exc)
+            log.warning("%s beklenmeyen hata: %s: %s",
+                        company_number, type(exc).__name__, exc)
 
         spent = client.stats["requests"] - before
         if spent > 1:
@@ -1910,10 +1917,27 @@ def fetch_company_data(client, company_numbers):
     if served:
         log.info("  Sunucunun sayfa basina dondurdugu azami kayit: %s "
                  "(biz %s istedik)", served, CH_PAGE_SIZE)
-    if per_company > 1.2 and not FETCH_COMPANY_PROFILE:
-        log.warning("  Sirket basina 1'den fazla istek gitti. Sebebi, officer "
-                    "listesinin tek sayfaya sigmamasidir - total_results ISTIFA "
-                    "ETMIS officer'lari da sayar, koklu sirketlerde liste uzundur.")
+    # Fazladan istegin sebebini DOGRU soyle: yeniden deneme mi, sayfalama mi?
+    extra = stats["requests"] - (total * (2 if FETCH_COMPANY_PROFILE else 1))
+    if extra > 0:
+        if stats["retries"] >= extra:
+            log.warning("  %s fazladan istek YENIDEN DENEMEDEN kaynaklandi "
+                        "(timeout / 429 / 5xx).", extra)
+        else:
+            log.warning("  %s fazladan istek gitti; %s tanesi yeniden deneme, "
+                        "kalani SAYFALAMA - officer listesi tek sayfaya sigmadi "
+                        "(total_results istifa edenleri de sayar).",
+                        extra, stats["retries"])
+
+    reasons = {}
+    for company_number, entry in results.items():
+        if entry.get("error"):
+            key = entry["error"].split(":")[0] if entry["error"] == "not_found" else entry["error"]
+            reasons[key] = reasons.get(key, 0) + 1
+    if reasons:
+        log.warning("  Basarisiz sorgular (sebep -> adet):")
+        for reason, count in sorted(reasons.items(), key=lambda kv: -kv[1])[:8]:
+            log.warning("    %-52s %s", reason[:52], count)
 
     if fatal["error"]:
         raise CompaniesHouseAuthError(fatal["error"])
@@ -2097,6 +2121,8 @@ def print_summary(contexts):
 
 def main():
     start_time = time.time()
+    log.info("email_diagnostics %s  (python %s)", __version__,
+             ".".join(str(n) for n in sys.version_info[:3]))
 
     # --- Guvenlik: girdi dosyasinin uzerine yazma ---
     if os.path.abspath(INPUT_FILE) == os.path.abspath(OUTPUT_FILE):
@@ -2471,6 +2497,8 @@ def build_arg_parser():
             "  macOS/Linux: export {env}=\"anahtar\"".format(env=CH_API_KEY_ENV)
         ),
     )
+    parser.add_argument("--version", action="version",
+                        version="email_diagnostics {}".format(__version__))
     subparsers = parser.add_subparsers(dest="command", metavar="komut")
 
     inspect = subparsers.add_parser(
