@@ -261,6 +261,8 @@ CH_WORKERS = 4                    # paralel thread sayisi
 CH_PAGE_SIZE = 100                # officers endpoint sayfa boyutu (UST SINIR, garanti degil)
 CH_MAX_OFFICERS = 2000            # tek sirkette taranacak azami officer sayisi
 CH_MAX_REQUESTS = None            # toplam HTTP istegi ust siniri (None = sinirsiz)
+CH_CA_BUNDLE = None               # kurumsal kok sertifika (.pem) yolu
+CH_VERIFY_SSL = True              # False = sertifika dogrulamasi KAPALI (guvensiz)
 
 # --- Loglama -------------------------------------------------------
 LOG_LEVEL = logging.INFO
@@ -1243,6 +1245,48 @@ class LookupFailed(Exception):
     """Yeniden denemelerden sonra basarisiz."""
 
 
+class SSLHandshakeError(Exception):
+    """TLS el sikismasi basarisiz - genelde kurumsal proxy/antivirus keser."""
+
+
+def ssl_help(exc):
+    """SSL hatasinda ne yapilacagini anlatan, uygulanabilir metin."""
+    return "\n".join([
+        "TLS el sikismasi basarisiz (SSL bad handshake).",
+        "",
+        "Sebep: {}".format(exc),
+        "",
+        "Bu neredeyse her zaman AGIN TRAFIGI KESMESIDIR - kurumsal guvenlik",
+        "duvari (Zscaler, Netskope, Fortinet, Cisco Umbrella) veya antivirusun",
+        "SSL taramasi (Kaspersky, ESET, Avast) kendi sertifikasini sunar, o da",
+        "Python'in sertifika deposunda bulunmaz.",
+        "",
+        "COZUMLER (sirayla dene):",
+        "",
+        "1) Windows sertifika deposunu kullan - kurumsal aglarda en temizi:",
+        "     pip install pip-system-certs",
+        "   Kurumun kok sertifikasi Windows'ta zaten kayitlidir; bu paket",
+        "   requests'i o depoya baglar. Kod degisikligi gerekmez.",
+        "",
+        "2) Kurumun kok sertifikasini dosya olarak ver:",
+        "     python email_diagnostics.py triage ... --ca-bundle C:\\yol\\kurum-root.pem",
+        "   veya ortam degiskeniyle:  set REQUESTS_CA_BUNDLE=C:\\yol\\kurum-root.pem",
+        "   (.pem dosyasini BT ekibinden isteyebilir ya da Windows'ta",
+        "    certmgr.msc > Guvenilen Kok Sertifika Yetkilileri'nden disa aktarabilirsin)",
+        "",
+        "3) Proxy uzerinden cikman gerekiyorsa:",
+        "     set HTTPS_PROXY=http://proxy.kurum.local:8080",
+        "",
+        "4) Sertifika deposu eskimisse:",
+        "     pip install --upgrade certifi",
+        "",
+        "SON CARE) --insecure ile sertifika dogrulamasini kapat.",
+        "   DIKKAT: bu, API anahtarinin dogrulanmamis bir baglantidan gecmesi",
+        "   demektir. Sadece sorunun kaynagini teyit etmek icin kullan, kalici",
+        "   cozum olarak kullanma.",
+    ])
+
+
 class RateLimiter(object):
     """
     Thread'ler arasi ortak hiz sinirlayici.
@@ -1272,6 +1316,22 @@ class CompaniesHouseClient(object):
         self._session = requests.Session()
         self._session.auth = (api_key, "")     # Basic auth: kullanici=anahtar, sifre bos
         self._session.headers.update({"Accept": "application/json"})
+
+        # TLS dogrulamasi: kurumsal kok sertifika verildiyse onu kullan.
+        if CH_CA_BUNDLE:
+            self._session.verify = CH_CA_BUNDLE
+            log.info("TLS: kurumsal kok sertifika kullaniliyor -> %s", CH_CA_BUNDLE)
+        elif not CH_VERIFY_SSL:
+            self._session.verify = False
+            log.warning("!" * 62)
+            log.warning("--insecure AKTIF: TLS sertifikasi DOGRULANMIYOR.")
+            log.warning("API anahtarin dogrulanmamis bir baglantidan geciyor.")
+            log.warning("Bunu sadece teshis icin kullan, kalici cozum degildir.")
+            log.warning("!" * 62)
+            try:
+                requests.packages.urllib3.disable_warnings()
+            except Exception:
+                pass
         self._limiter = RateLimiter(rate_per_second)
         self.last_status = {}                  # regnum -> son HTTP kodu (DEBUG icin)
 
@@ -1314,6 +1374,10 @@ class CompaniesHouseClient(object):
                       sequence, attempt, path, params or "")
             try:
                 response = self._session.get(url, params=params, timeout=CH_TIMEOUT)
+            except requests.exceptions.SSLError as exc:
+                # SSL el sikisma hatasi KALICIDIR - tekrar denemek bosuna
+                # zaman ve kota harcar. Hemen anlasilir bir hatayla cik.
+                raise SSLHandshakeError(ssl_help(exc))
             except requests.exceptions.RequestException as exc:
                 last_error = "baglanti: {}".format(exc)
                 time.sleep(min(2 ** attempt, 10))
@@ -2349,6 +2413,21 @@ def check_setup(input_path=None, skip_api=False, delimiter=None, encoding=None):
         installed = getattr(module, "__version__", "?")
         print("%s %-9s %s" % (_mark(True), name, installed))
 
+    # --- 2b) TLS ortami (SSL hatalarinda kritik) ---
+    try:
+        import ssl as _ssl
+        print("%s OpenSSL   %s" % (_mark(True), _ssl.OPENSSL_VERSION))
+    except ImportError:
+        pass
+    for name in ("HTTPS_PROXY", "HTTP_PROXY", "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE"):
+        value = os.environ.get(name) or os.environ.get(name.lower())
+        if value:
+            print("       %-18s %s" % (name, value))
+    if CH_CA_BUNDLE:
+        print("       %-18s %s" % ("--ca-bundle", CH_CA_BUNDLE))
+    if not CH_VERIFY_SSL:
+        print("       %-18s %s" % ("--insecure", "TLS DOGRULAMASI KAPALI"))
+
     # --- 3) API anahtari ---
     api_key, source = get_api_key()
     if api_key:
@@ -2375,6 +2454,11 @@ def check_setup(input_path=None, skip_api=False, delimiter=None, encoding=None):
             print("      Anahtari yanlis kopyalamis olabilirsin, ya da 'Live' yerine")
             print("      'Test' anahtari kullaniyorsundur. Developer Hub'dan kontrol et.")
             problems.append("api_key_invalid")
+        except SSLHandshakeError as exc:
+            print("%s TLS el sikismasi basarisiz." % _mark(False))
+            print()
+            print(exc)
+            problems.append("ssl")
         except LookupFailed as exc:
             print("%s API'ye ulasilamadi: %s" % (_mark(False), exc))
             print("      Internet baglantisi, proxy veya guvenlik duvari olabilir.")
@@ -2593,6 +2677,10 @@ def build_arg_parser():
     inspect.add_argument("regnum", help="Sirket numarasi, orn. 17107304")
     inspect.add_argument("--raw", action="store_true",
                          help="Ham JSON yanitini oldugu gibi bas.")
+    inspect.add_argument("--ca-bundle", default=CH_CA_BUNDLE, metavar="YOL",
+                         help="Kurumsal kok sertifika (.pem).")
+    inspect.add_argument("--insecure", action="store_true",
+                         help="TLS sertifika dogrulamasini KAPAT. Guvensiz - sadece teshis icin.")
     inspect.add_argument("-v", "--verbose", action="store_true", help="Ayrintili loglama.")
 
     check = subparsers.add_parser(
@@ -2611,6 +2699,10 @@ def build_arg_parser():
                        help="CSV ayraci (varsayilan: otomatik tahmin).")
     check.add_argument("--encoding", default=None, metavar="KODLAMA",
                        help="CSV kodlamasi (varsayilan: otomatik tespit).")
+    check.add_argument("--ca-bundle", default=CH_CA_BUNDLE, metavar="YOL",
+                       help="Kurumsal kok sertifika (.pem).")
+    check.add_argument("--insecure", action="store_true",
+                       help="TLS sertifika dogrulamasini KAPAT. Guvensiz - sadece teshis icin.")
     check.add_argument("-v", "--verbose", action="store_true",
                        help="Ayrintili loglama.")
 
@@ -2659,6 +2751,10 @@ def build_arg_parser():
     triage.add_argument("--max-requests", type=int, default=CH_MAX_REQUESTS, metavar="N",
                         help="Toplam HTTP istegi ust siniri. Asilirsa istek gonderilmez. "
                              "Kotayi korumak icin sert fren.")
+    triage.add_argument("--ca-bundle", default=CH_CA_BUNDLE, metavar="YOL",
+                        help="Kurumsal kok sertifika (.pem). TLS'i kesen aglarda gerekir.")
+    triage.add_argument("--insecure", action="store_true",
+                        help="TLS sertifika dogrulamasini KAPAT. Guvensiz - sadece teshis icin.")
     triage.add_argument("--rate", type=float, default=CH_RATE_LIMIT_PER_SEC, metavar="N",
                         help="Saniyedeki istek ust siniri. Resmi limit 600/5dk = 2.0. "
                              "Varsayilan: %(default)s")
@@ -2670,6 +2766,7 @@ def apply_cli_args(args):
     global INPUT_FILE, OUTPUT_FILE, INPUT_SHEET, INPUT_DELIMITER, INPUT_ENCODING
     global DEBUG, DRY_RUN, MAX_ROWS, MAX_COMPANIES, LOOKUP_MODE, FETCH_COMPANY_PROFILE
     global CH_WORKERS, CH_RATE_LIMIT_PER_SEC, CH_MAX_REQUESTS
+    global CH_CA_BUNDLE, CH_VERIFY_SSL
 
     INPUT_FILE = args.input
     OUTPUT_FILE = args.output
@@ -2686,12 +2783,22 @@ def apply_cli_args(args):
     CH_WORKERS = max(1, int(args.workers))
     CH_RATE_LIMIT_PER_SEC = max(0.1, float(args.rate))
     CH_MAX_REQUESTS = args.max_requests
+    apply_tls_args(args)
 
     if args.verbose:
         log.setLevel(logging.DEBUG)
         logging.getLogger().setLevel(logging.DEBUG)
         log.debug("Ayarlar: mode=%s workers=%s rate=%.1f/sn debug=%s dry_run=%s limit=%s",
                   LOOKUP_MODE, CH_WORKERS, CH_RATE_LIMIT_PER_SEC, DEBUG, DRY_RUN, MAX_ROWS)
+
+
+def apply_tls_args(args):
+    """--ca-bundle / --insecure secimlerini uygular (tum alt komutlarda ortak)."""
+    global CH_CA_BUNDLE, CH_VERIFY_SSL
+    CH_CA_BUNDLE = getattr(args, "ca_bundle", None)
+    CH_VERIFY_SSL = not getattr(args, "insecure", False)
+    if CH_CA_BUNDLE and not os.path.isfile(CH_CA_BUNDLE):
+        raise IOError("--ca-bundle dosyasi bulunamadi: {}".format(CH_CA_BUNDLE))
 
 
 def cli(argv=None):
@@ -2709,8 +2816,10 @@ def cli(argv=None):
 
     if args.command == "inspect":
         try:
+            apply_tls_args(args)
             return inspect_company(args.regnum, args.raw)
-        except (EnvironmentError, CompaniesHouseAuthError, LookupFailed) as error:
+        except (EnvironmentError, CompaniesHouseAuthError, LookupFailed,
+                SSLHandshakeError, IOError) as error:
             log.error("%s", error)
             return 1
         except KeyboardInterrupt:
@@ -2719,6 +2828,7 @@ def cli(argv=None):
 
     if args.command == "check":
         try:
+            apply_tls_args(args)
             return check_setup(args.input, args.skip_api, args.delimiter, args.encoding)
         except KeyboardInterrupt:
             log.error("Kullanici tarafindan durduruldu.")
@@ -2727,7 +2837,8 @@ def cli(argv=None):
     apply_cli_args(args)
     try:
         main()
-    except (ValueError, IOError, EnvironmentError, CompaniesHouseAuthError) as error:
+    except (ValueError, IOError, EnvironmentError, CompaniesHouseAuthError,
+            SSLHandshakeError) as error:
         log.error("%s", error)
         return 1
     except KeyboardInterrupt:

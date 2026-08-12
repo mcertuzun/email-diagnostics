@@ -329,6 +329,39 @@ Companies House'ta **officer'ları toplu indirmenin bir yolu yok.** `/company/{r
 
 **Ama Free Company Data Product yine de işinize yarar:** aylık ücretsiz bir CSV olarak tüm şirketlerin numarasını, resmî adını ve durumunu (`active` / `dissolved`) içerir. Bunu indirip yerelden okursanız `--company-profile`'ın yaptığı işi **sıfır API isteğiyle** yaparsınız — resmî şirket adı ve kapanmış şirket tespiti bedavaya gelir. Bu entegrasyon henüz yazılmadı; ihtiyaç olursa eklenebilir.
 
+## `SSL: bad handshake` alıyorsam?
+
+Kurumsal ağlarda çok yaygın. Güvenlik duvarı (Zscaler, Netskope, Fortinet, Cisco Umbrella) veya antivirüsün SSL taraması (Kaspersky, ESET, Avast) TLS trafiğini keser ve kendi sertifikasını sunar; o sertifika Python'ın deposunda olmadığı için el sıkışma başarısız olur.
+
+Sırayla deneyin:
+
+**1. Windows sertifika deposunu kullanın** — kurumsal ağlarda en temizi. Kurumun kök sertifikası Windows'ta zaten kayıtlıdır:
+
+```bash
+pip install pip-system-certs
+```
+
+**2. Kök sertifikayı dosya olarak verin:**
+
+```bash
+python email_diagnostics.py triage -i liste.csv -o sonuc.csv --ca-bundle C:\yol\kurum-root.pem
+```
+
+`.pem` dosyasını BT ekibinizden isteyebilir veya `certmgr.msc` → Güvenilen Kök Sertifika Yetkilileri'nden dışa aktarabilirsiniz. `REQUESTS_CA_BUNDLE` ortam değişkeni de çalışır.
+
+**3. Proxy gerekiyorsa:** `set HTTPS_PROXY=http://proxy.kurum.local:8080`
+
+**4. Sertifika deposu eskiyse:** `pip install --upgrade certifi`
+
+**Son çare:** `--insecure` doğrulamayı kapatır. API anahtarınız doğrulanmamış bir bağlantıdan geçer — sadece sorunun kaynağını teyit etmek için kullanın, kalıcı çözüm olarak değil. Aktifken her çalıştırmada uyarı basar.
+
+`check` komutu OpenSSL sürümünü, proxy ve CA ayarlarını da gösterir:
+
+```
+[OK]   OpenSSL   OpenSSL 1.0.2o
+       HTTPS_PROXY        http://proxy.kurum.local:8080
+```
+
 ## API hatası alıyorsam?
 
 `companies_house_lookup_failed` gördüğünüzde script artık **gerçek sebebi** yazar:
