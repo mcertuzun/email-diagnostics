@@ -9,6 +9,7 @@ traceability, which is what source_row is for.
 
 No network access.
 """
+import io
 import os
 import sys
 
@@ -230,6 +231,52 @@ plain_source = [r[list(plain_rows[0]).index("source_row")] for r in plain_rows[1
 check("input order kept", plain_source, list(range(2, 2 + len(ROWS))))
 os.remove("sh_in.xlsx")
 os.remove("sh_plain.xlsx")
+
+# CSV output cannot carry any of it, and must say so rather than silently
+# producing a flat file when sheets were expected.
+print()
+print("=" * 92)
+print(" CSV OUTPUT")
+print("=" * 92)
+workbook.save("sh_in.xlsx")
+ED.CompaniesHouseClient = Patched
+messages = []
+
+
+class Capture(object):
+    def __init__(self, sink):
+        self.sink = sink
+
+    def handle(self, record):
+        self.sink.append(record.getMessage())
+
+    def level(self):
+        return 0
+
+
+import logging
+
+
+class _Handler(logging.Handler):
+    def emit(self, record):
+        messages.append(record.getMessage())
+
+
+handler = _Handler()
+ED.log.addHandler(handler)
+ED.cli(["triage", "-i", "sh_in.xlsx", "-o", "sh_out.csv"])
+ED.log.removeHandler(handler)
+ED.CompaniesHouseClient = original
+
+joined = "\n".join(messages)
+check("warns that CSV holds one table", "ONE flat table" in joined, True)
+check("names the .xlsx alternative", ".xlsx" in joined, True)
+with io.open("sh_out.csv", encoding="utf-8-sig") as handle:
+    csv_header = handle.readline().strip().split(",")
+check("action column still present in CSV", "action" in csv_header, True)
+check("source_row still present in CSV", "source_row" in csv_header, True)
+os.remove("sh_in.xlsx")
+os.remove("sh_out.csv")
 
 print()
 print("=" * 92)

@@ -260,7 +260,15 @@ Two deliberate choices:
 
 `--plain` turns all of it off — one sheet, input order, no colour — if you are feeding the output into something else.
 
-CSV output cannot carry sheets or formatting. It still gets `action` and `source_row`; if you want the rest, write `.xlsx`.
+**CSV output gets none of this.** A CSV file holds one table by definition, so there are no work queue sheets, no `Summary` and no `Companies` — just one flat table. The `action` and `source_row` columns are still there. The script warns about this **before** it starts work, so an API run is not spent producing a file that cannot hold the result.
+
+If you want the sheets, write `.xlsx`:
+
+```bash
+python email_diagnostics.py triage -i list.csv -o result.xlsx --verbose
+```
+
+The input can stay CSV; only the output extension decides.
 
 ## Output columns
 

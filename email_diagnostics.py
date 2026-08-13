@@ -294,7 +294,7 @@ log = logging.getLogger("diagnostics")
 
 # Version: check with 'python email_diagnostics.py --version'.
 # Running a stale copy is the most common source of confusion on Windows.
-__version__ = "2.4.0"
+__version__ = "2.4.1"
 
 # Command line defaults are captured ONCE, here. Reading the module globals
 # when the parser is built would let one run's settings leak into the next,
@@ -2712,7 +2712,11 @@ def write_output(path, original_headers, contexts, meta=None, run_stats=None):
             "It may be open in Excel; close it and try again.\nDetail: {}"
             .format(os.path.abspath(path), exc)
         )
-    log.info("Output written: %s  (%s rows)", os.path.abspath(path), len(contexts))
+    if is_csv_path(path):
+        log.info("Output written: %s  (%s rows, one flat table)",
+                 os.path.abspath(path), len(contexts))
+    else:
+        log.info("Output written: %s  (%s rows)", os.path.abspath(path), len(contexts))
 
 
 def print_summary(contexts):
@@ -2748,6 +2752,18 @@ def main():
     start_time = time.time()
     log.info("email_diagnostics %s  (python %s)", __version__,
              ".".join(str(n) for n in sys.version_info[:3]))
+
+    # A CSV file holds ONE table, so none of the sheet structure can be
+    # written to it. Warn before doing the work rather than after, so an
+    # API run is not spent producing a file that cannot hold the result.
+    if is_csv_path(OUTPUT_FILE) and PRETTY_OUTPUT:
+        log.warning("=" * 66)
+        log.warning("Output is CSV, so it will be ONE flat table.")
+        log.warning("A CSV cannot hold sheets: no work queue sheets, no Summary,")
+        log.warning("no Companies. The action and source_row columns are still there.")
+        log.warning("For the sheets, write .xlsx instead:  --output %s.xlsx",
+                    os.path.splitext(os.path.basename(OUTPUT_FILE))[0])
+        log.warning("=" * 66)
 
     # --- Safety: never write over the input file ---
     if os.path.abspath(INPUT_FILE) == os.path.abspath(OUTPUT_FILE):
