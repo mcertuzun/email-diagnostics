@@ -81,12 +81,15 @@ OFFICERS = {
          "officer_role": "director"},
         {"name": "PATEL, Priya", "name_elements": {"forename": "Priya", "surname": "Patel"},
          "officer_role": "secretary"},
+        {"name": "REID, Alan", "name_elements": {"forename": "Alan", "surname": "Reid"},
+         "officer_role": "director"},
         {"name": "OLD, Gone", "name_elements": {"forename": "Gone", "surname": "Old"},
          "officer_role": "director", "resigned_on": "2020-01-01"},
     ],
 }
 PROFILES = {
     "00000001": {"company_name": "AVZ TRADING LIMITED", "company_status": "active",
+                 # A former name is present but must NOT reach the output column.
                  "previous_company_names": [{"name": "ALI VELI ZEYNEP LIMITED",
                                              "effective_from": "2010-01-01",
                                              "ceased_on": "2018-06-30"}]},
@@ -112,6 +115,9 @@ sheet.append(["John", "Smith", "john.smith@avzgroup.com", "Ali Veli Zeynep Ltd",
               "00000001", "Bounced"])
 # row 2: nobody by this name -> should get suggestions
 sheet.append(["Zeynep", "Kaya", "z.kaya@avzgroup.com", "Ali Veli Zeynep Ltd",
+              "00000001", "Bounced"])
+# row 3: matches an officer who has RESIGNED -> should also get suggestions
+sheet.append(["Gone", "Old", "gone.old@avzgroup.com", "Ali Veli Zeynep Ltd",
               "00000001", "Bounced"])
 workbook.save("feat_in.xlsx")
 
@@ -142,14 +148,26 @@ names_index = header.index("companyhouse_names")
 sugg_index = header.index("active_officer_suggestions")
 result_index = header.index("result")
 
-check("official + former names", data[0][names_index],
-      "AVZ TRADING LIMITED | ALI VELI ZEYNEP LIMITED")
-check("matched row -> no suggestions", data[0][sugg_index] or "", "")
-check("matched row result", (data[0][result_index] or "").split(":")[0], ED.R.ACTIVE)
+check("current name only, no former names", data[0][names_index],
+      "AVZ TRADING LIMITED")
+check("active match -> no suggestions", data[0][sugg_index] or "", "")
+check("active match result", (data[0][result_index] or "").split(":")[0], ED.R.ACTIVE)
 
-check("unmatched row result", data[1][result_index], ED.R.NO_OFFICER)
-check("suggestions list active only", data[1][sugg_index],
-      "John Smith (director) | Priya Patel (secretary)")
+print()
+print("     -- unmatched contact --")
+check("result", data[1][result_index], ED.R.NO_OFFICER)
+check("suggestions capped at %d + remainder" % ED.ACTIVE_SUGGESTION_LIMIT,
+      data[1][sugg_index],
+      "John Smith (director) | Priya Patel (secretary) | +1 more")
+check("resigned officer excluded from suggestions",
+      "Gone Old" in (data[1][sugg_index] or ""), False)
+
+print()
+print("     -- contact matched but RESIGNED --")
+check("result", (data[2][result_index] or "").split(":")[0], ED.R.RESIGNED)
+check("resigned row also gets suggestions", data[2][sugg_index],
+      "John Smith (director) | Priya Patel (secretary) | +1 more")
+check("limit constant is 2", ED.ACTIVE_SUGGESTION_LIMIT, 2)
 
 print()
 print("=" * 84)

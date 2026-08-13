@@ -262,7 +262,11 @@ MIN_LOCAL_LEN_FOR_TYPO = 5    # never call a shorter local part a typo
 DOMAIN_TYPO_MAX_DISTANCE = 2  # allowed distance on the domain root
 MIN_DOMAIN_LEN_FOR_TYPO = 4   # never call a shorter domain root a typo
 SURNAME_MAX_DISTANCE = 1      # allowed distance when matching an officer surname
-ACTIVE_SUGGESTION_LIMIT = 5   # max names listed in active_officer_suggestions
+# How many names to list in active_officer_suggestions. Kept deliberately
+# short: the column is a starting point for finding a replacement contact,
+# not a copy of the register. The same cap applies whether the contact was
+# not found at all or was found but has resigned.
+ACTIVE_SUGGESTION_LIMIT = 2
 
 # --- Companies House -----------------------------------------------
 CH_API_BASE = "https://api.company-information.service.gov.uk"
@@ -289,7 +293,7 @@ log = logging.getLogger("diagnostics")
 
 # Version: check with 'python email_diagnostics.py --version'.
 # Running a stale copy is the most common source of confusion on Windows.
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 # Command line defaults are captured ONCE, here. Reading the module globals
 # when the parser is built would let one run's settings leak into the next,
@@ -2225,14 +2229,8 @@ def apply_companies_house(context, company_data):
 
     profile = entry.get("profile")
     if isinstance(profile, dict):
-        # companyhouse_names holds the official registered name, followed by
-        # any former names the company traded under. A company that rebranded
-        # often keeps the old domain, so the previous names are worth seeing.
-        names = [profile.get("company_name") or ""]
-        for previous in (profile.get("previous_company_names") or []):
-            if isinstance(previous, dict) and previous.get("name"):
-                names.append(previous["name"])
-        context["company_name"] = " | ".join(n for n in names if n)
+        # The current registered name only.
+        context["company_name"] = profile.get("company_name") or ""
 
     if entry["error"] == "not_found":
         context["result"] = R.COMPANY_NOT_FOUND
@@ -2262,10 +2260,10 @@ def apply_companies_house(context, company_data):
     match = match_contact_to_officers(context["name"], officers)
     context["officer_name"] = match["officer_name"]
 
-    # When nobody matched, the row is a dead end unless we say who IS at the
-    # company. List the currently serving officers so the contact can be
-    # replaced rather than just marked unresolved.
-    if match["status"] == "none":
+    # Suggest who is currently in post whenever this contact cannot be
+    # reached: either nobody matched, or the person matched but has resigned.
+    # In both cases the row is a dead end without a replacement name.
+    if match["status"] in ("none", "resigned", "possible_resigned"):
         context["suggestions"] = list_active_officers(officers)
     if match["reason"]:
         context["reason"] = match["reason"]

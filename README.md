@@ -248,8 +248,8 @@ Every original column is preserved, with these appended:
 | `result_reason` | A short supporting reason |
 | `ch_officer_name` | The official full name from Companies House, middle names included |
 | `ch_officer_status` | `active` / `resigned` / `possible_active` / `possible_resigned` / `not_found` / `lookup_failed` / `not_checked` |
-| `companyhouse_names` | The registered company name, followed by any former names, separated by ` \| ` |
-| `active_officer_suggestions` | When nobody matched: who is currently in post, with their role — so the contact can be replaced instead of the row just being marked unresolved |
+| `companyhouse_names` | The current registered company name |
+| `active_officer_suggestions` | Who is currently in post, with their role, whenever this contact cannot be reached — either nobody matched or the person matched but has resigned. Capped at `ACTIVE_SUGGESTION_LIMIT` (2) names, with `+N more` when there are others |
 
 `--debug` adds 11 more audit columns: cleaned name parts, nicknames, company tokens, the matched pattern, the distance, the domain verdict and the regnum actually used.
 
@@ -276,6 +276,7 @@ Most settings have a command line equivalent. These live only in the file, at th
 | `NICKNAME_GROUPS` | The nickname dictionary — extend it freely |
 | `ACRONYM_DOMAIN_SUFFIXES` | Words that follow an acronym in a domain |
 | `TYPO_MAX_DISTANCE_*` | Typo thresholds |
+| `ACTIVE_SUGGESTION_LIMIT` | How many names `active_officer_suggestions` lists (default 2) |
 | `GENERIC_MAILBOXES` | Non-personal mailboxes such as `info@`, `accounts@` |
 | `COMPANY_STOPWORDS` | Legal suffixes stripped from company names |
 | `FREE_EMAIL_DOMAINS` | Personal email providers |
