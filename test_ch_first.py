@@ -104,7 +104,8 @@ class Patched(original):
 
 ED.CompaniesHouseClient = Patched
 os.environ["CH_API_KEY"] = "fake"
-ED.cli(["triage", "-i", "chf_in.xlsx", "-o", "chf_out.xlsx"])
+# --plain keeps the input row order, so the cases can be checked positionally
+ED.cli(["triage", "-i", "chf_in.xlsx", "-o", "chf_out.xlsx", "--plain"])
 ED.CompaniesHouseClient = original
 
 rows = list(openpyxl.load_workbook("chf_out.xlsx").active.iter_rows(values_only=True))

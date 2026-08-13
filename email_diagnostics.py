@@ -87,6 +87,7 @@ INPUT_ENCODING = None                            # CSV encoding; None = detect
 
 # --- Run mode ------------------------------------------------------
 DEBUG = False          # True -> add the audit columns to the output
+PRETTY_OUTPUT = True   # Excel only: sort by action, colour, autofilter, extra sheets
 DRY_RUN = False        # True -> never call Companies House (offline)
 MAX_ROWS = None        # e.g. 50 -> process only the first 50 bounced rows
 MAX_COMPANIES = None   # e.g. 10 -> query at most 10 DISTINCT regnums
@@ -293,7 +294,7 @@ log = logging.getLogger("diagnostics")
 
 # Version: check with 'python email_diagnostics.py --version'.
 # Running a stale copy is the most common source of confusion on Windows.
-__version__ = "2.2.0"
+__version__ = "2.3.0"
 
 # Command line defaults are captured ONCE, here. Reading the module globals
 # when the parser is built would let one run's settings leak into the next,
@@ -306,7 +307,7 @@ _DEFAULTS = {}
 def _capture_defaults():
     _DEFAULTS.update({
         "input": INPUT_FILE, "output": OUTPUT_FILE, "sheet": INPUT_SHEET,
-        "limit": MAX_ROWS, "limit_companies": MAX_COMPANIES,
+        "limit": MAX_ROWS, "limit_companies": MAX_COMPANIES, "pretty": PRETTY_OUTPUT,
         "mode": LOOKUP_MODE, "company_profile": FETCH_COMPANY_PROFILE,
         "workers": CH_WORKERS, "rate": CH_RATE_LIMIT_PER_SEC,
         "max_requests": CH_MAX_REQUESTS, "ca_bundle": CH_CA_BUNDLE,
@@ -2114,7 +2115,9 @@ def build_row_context(row, index_map):
         "officer_name": "",
         "officer_status": "not_checked",
         "company_name": "",
+        "company_status": "",
         "suggestions": "",
+        "source_row": 0,
         "typo": None,
     }
 
@@ -2303,6 +2306,7 @@ def apply_companies_house(context, company_data):
     if isinstance(profile, dict):
         # The current registered name only.
         context["company_name"] = profile.get("company_name") or ""
+        context["company_status"] = profile.get("company_status") or ""
 
     if entry["error"] == "not_found":
         context["result"] = R.COMPANY_NOT_FOUND
@@ -2361,7 +2365,33 @@ def apply_companies_house(context, company_data):
 
 OUTPUT_COLUMNS = ["action", "result", "result_reason",
                   "ch_officer_name", "ch_officer_status",
-                  "companyhouse_names", "active_officer_suggestions"]
+                  "companyhouse_names", "active_officer_suggestions", "source_row"]
+
+# Work queues first, investigate-all-correct last: those rows are the ones
+# you do not need to read, so they belong at the bottom of the sheet.
+ACTION_ORDER = [
+    A.FIX_ADDRESS,
+    A.FIND_NEW_CONTACT,
+    A.MISMATCHED,
+    A.UNCERTAIN_MATCH,
+    A.NON_COMPANY_DOMAIN,
+    A.FIX_DATA,
+    A.ALL_CORRECT,
+]
+
+# One muted fill per action, applied to the action cell only. Colouring whole
+# rows turns a long sheet into noise; one column is enough to scan by.
+ACTION_FILL = {
+    A.FIX_ADDRESS:        "FFE8C6",   # amber  - you can fix this yourself
+    A.FIND_NEW_CONTACT:   "CFE2F3",   # blue   - needs a different person
+    A.MISMATCHED:         "FBD9C8",   # orange - needs a human eye
+    A.UNCERTAIN_MATCH:    "E4D5F0",   # purple - identity unconfirmed
+    A.NON_COMPANY_DOMAIN: "EDEDED",   # grey   - no company signal
+    A.FIX_DATA:           "F8CFCF",   # red    - input or run problem
+    A.ALL_CORRECT:        "D9EAD3",   # green  - nothing found, skip
+}
+
+MAX_COLUMN_WIDTH = 46
 
 DEBUG_COLUMNS = [
     "dbg_clean_first", "dbg_clean_middles", "dbg_clean_surname", "dbg_nicknames",
@@ -2387,6 +2417,7 @@ def _build_output_row(context):
         context["officer_status"] or "",
         context["company_name"] or "",
         context["suggestions"] or "",
+        context["source_row"] or "",
     ])
     if DEBUG:
         typo = context["typo"] or {}
@@ -2407,7 +2438,133 @@ def _build_output_row(context):
     return values
 
 
-def write_output(path, original_headers, contexts, meta=None):
+def _autosize(sheet, headers, row_count):
+    """Size each column to its content, capped so one long cell cannot take over."""
+    from openpyxl.utils import get_column_letter
+    for index in range(1, len(headers) + 1):
+        widest = len(str(headers[index - 1]))
+        for row in range(2, min(row_count + 2, 200)):     # sample, not the whole sheet
+            value = sheet.cell(row=row, column=index).value
+            if value is not None:
+                widest = max(widest, len(str(value)))
+        sheet.column_dimensions[get_column_letter(index)].width = min(
+            widest + 2, MAX_COLUMN_WIDTH)
+
+
+def _style_results_sheet(sheet, headers, row_count):
+    """Bold header, frozen top row, autofilter, sized columns, colour by action."""
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    for cell in sheet[1]:
+        cell.font = Font(bold=True)
+        cell.alignment = Alignment(vertical="center")
+
+    sheet.freeze_panes = "A2"
+    if row_count:
+        sheet.auto_filter.ref = "A1:{}{}".format(
+            get_column_letter(len(headers)), row_count + 1)
+
+    action_index = headers.index("action") + 1
+    fills = dict((name, PatternFill(start_color=colour, end_color=colour,
+                                    fill_type="solid"))
+                 for name, colour in ACTION_FILL.items())
+    for row in range(2, row_count + 2):
+        cell = sheet.cell(row=row, column=action_index)
+        fill = fills.get(cell.value)
+        if fill is not None:
+            cell.fill = fill
+
+    _autosize(sheet, headers, row_count)
+
+
+def _write_summary_sheet(workbook, contexts, run_stats):
+    """
+    Counts and run metadata, so the numbers survive the console scrollback.
+    Written first in the book order but after Results so Results opens first.
+    """
+    from openpyxl.styles import Font
+
+    sheet = workbook.create_sheet("Summary")
+
+    def heading(text):
+        sheet.append([])
+        sheet.append([text])
+        sheet.cell(row=sheet.max_row, column=1).font = Font(bold=True)
+
+    sheet.append(["email-diagnostics", __version__])
+    sheet.cell(row=1, column=1).font = Font(bold=True)
+
+    heading("RUN")
+    for label, value in (run_stats or {}).items():
+        sheet.append([label, value])
+
+    total = len(contexts)
+    for title, values in (
+            ("ACTION", [classify_action(c) for c in contexts]),
+            ("RESULT", [(c["result"] or "").split(":")[0].strip() or "(empty)"
+                        for c in contexts]),
+            ("REASON", [c["reason"] or "(none)" for c in contexts])):
+        heading(title)
+        sheet.append(["value", "rows", "share"])
+        sheet.cell(row=sheet.max_row, column=1).font = Font(bold=True)
+        sheet.cell(row=sheet.max_row, column=2).font = Font(bold=True)
+        sheet.cell(row=sheet.max_row, column=3).font = Font(bold=True)
+        counts = {}
+        for value in values:
+            counts[value] = counts.get(value, 0) + 1
+        for value, count in sorted(counts.items(), key=lambda kv: -kv[1]):
+            share = "{:.1f}%".format(100.0 * count / total) if total else "0.0%"
+            sheet.append([value, count, share])
+
+    _autosize(sheet, ["value", "rows", "share"], sheet.max_row)
+
+
+def _write_companies_sheet(workbook, contexts):
+    """
+    One row per company rather than per contact: a different grain, not a copy
+    of Results. Answers "which companies do I need to re-contact wholesale".
+    """
+    from openpyxl.styles import Font
+
+    headers = ["regnum", "companyhouse_names", "company_status", "input_company",
+               "bounced_contacts", "resigned_or_missing", "active_officer_suggestions"]
+    sheet = workbook.create_sheet("Companies")
+    sheet.append(headers)
+    for cell in sheet[1]:
+        cell.font = Font(bold=True)
+
+    companies = OrderedDict()
+    for context in contexts:
+        key = context["regnum"] or "(no regnum)"
+        entry = companies.get(key)
+        if entry is None:
+            entry = {"names": "", "status": "", "input_company": "",
+                     "contacts": 0, "gone": 0, "suggestions": ""}
+            companies[key] = entry
+        entry["contacts"] += 1
+        if classify_action(context) == A.FIND_NEW_CONTACT:
+            entry["gone"] += 1
+        entry["names"] = entry["names"] or context["company_name"]
+        entry["status"] = entry["status"] or context["company_status"]
+        entry["suggestions"] = entry["suggestions"] or context["suggestions"]
+        if not entry["input_company"]:
+            entry["input_company"] = " ".join(context["company_tokens"])
+
+    for regnum, entry in sorted(companies.items(),
+                                key=lambda kv: (-kv[1]["gone"], -kv[1]["contacts"])):
+        sheet.append([regnum, entry["names"], entry["status"], entry["input_company"],
+                      entry["contacts"], entry["gone"], entry["suggestions"]])
+
+    sheet.freeze_panes = "A2"
+    if len(companies):
+        from openpyxl.utils import get_column_letter
+        sheet.auto_filter.ref = "A1:{}{}".format(
+            get_column_letter(len(headers)), len(companies) + 1)
+    _autosize(sheet, headers, len(companies))
+
+
+def write_output(path, original_headers, contexts, meta=None, run_stats=None):
     """
     Write the ONE output file, CSV or Excel according to its extension.
     The original columns are preserved exactly and the new ones appended.
@@ -2431,12 +2588,26 @@ def write_output(path, original_headers, contexts, meta=None):
                                      for v in _build_output_row(context)])
         else:
             workbook = openpyxl.Workbook()
-            sheet = workbook.active
-            sheet.title = "diagnostics"
-            sheet.append(headers)
-            for context in contexts:
-                sheet.append(_build_output_row(context))
-            sheet.freeze_panes = "A2"
+            results = workbook.active
+            results.title = "Results"
+            results.append(headers)
+
+            ordered = contexts
+            if PRETTY_OUTPUT:
+                rank = dict((name, i) for i, name in enumerate(ACTION_ORDER))
+                ordered = sorted(
+                    contexts,
+                    key=lambda c: (rank.get(classify_action(c), len(ACTION_ORDER)),
+                                   c["source_row"]))
+            for context in ordered:
+                results.append(_build_output_row(context))
+
+            if PRETTY_OUTPUT:
+                _style_results_sheet(results, headers, len(ordered))
+                _write_summary_sheet(workbook, contexts, run_stats)
+                _write_companies_sheet(workbook, contexts)
+            else:
+                results.freeze_panes = "A2"
             workbook.save(path)
     except IOError as exc:
         raise IOError(
@@ -2497,11 +2668,15 @@ def main():
         log.warning("--limit is set: only the first %s rows will be processed.", MAX_ROWS)
     if not problematic:
         log.warning("No rows have a bounce status. An empty output will be written.")
-        write_output(OUTPUT_FILE, original_headers, [], meta)
+        write_output(OUTPUT_FILE, original_headers, [], meta, {})
         return
 
     # --- Clean and run the email stage ---
     contexts = [build_row_context(row, index_map) for row in problematic]
+    # Rows get sorted by action in the output, so keep the input position to
+    # make each row traceable back to the source file.
+    for position, context in enumerate(contexts, start=2):
+        context["source_row"] = position
 
     pending = []
     for context in contexts:
@@ -2513,6 +2688,8 @@ def main():
 
     log.info("Email stage: %s of %s rows will go to Companies House.",
              len(pending), len(contexts))
+
+    request_count = 0
 
     # --- Companies House ---
     # NOTE: --limit bounds ROWS, not companies. Ten rows carrying three
@@ -2561,6 +2738,7 @@ def main():
         log.info("Companies House key found (source: %s)", key_source)
         client = CompaniesHouseClient(api_key, CH_RATE_LIMIT_PER_SEC, CH_MAX_REQUESTS)
         company_data = fetch_company_data(client, company_numbers)
+        request_count = client.stats["requests"]
 
         for context in pending:
             apply_companies_house(context, company_data)
@@ -2579,7 +2757,17 @@ def main():
                   context["result"], context["reason"] or "")
 
     # --- Write the output ---
-    write_output(OUTPUT_FILE, original_headers, contexts, meta)
+    run_stats = OrderedDict()
+    run_stats["finished"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    run_stats["input file"] = os.path.abspath(INPUT_FILE)
+    run_stats["mode"] = LOOKUP_MODE
+    run_stats["rows in file"] = len(rows)
+    run_stats["rows analysed"] = len(contexts)
+    run_stats["distinct companies"] = len(company_numbers)
+    run_stats["HTTP requests"] = request_count
+    run_stats["seconds"] = round(time.time() - start_time, 1)
+
+    write_output(OUTPUT_FILE, original_headers, contexts, meta, run_stats)
     print_summary(contexts)
     log.info("Finished in %.1f seconds", time.time() - start_time)
 
@@ -2943,6 +3131,10 @@ def build_arg_parser():
                         help="Log the decision for every row.")
     triage.add_argument("--debug", action="store_true",
                         help="Add the audit columns to the output file.")
+    triage.add_argument("--plain", dest="pretty", action="store_false",
+                        default=_DEFAULTS["pretty"],
+                        help="Excel output only: skip the sorting, colouring and the "
+                             "Summary and Companies sheets, and keep the input row order.")
     triage.add_argument("--dry-run", "--no-ch", "--skip-api", dest="dry_run",
                         action="store_true",
                         help="Never call Companies House; run the email analysis only. "
@@ -2981,6 +3173,7 @@ def apply_cli_args(args):
     """Apply the command line arguments to the module settings."""
     global INPUT_FILE, OUTPUT_FILE, INPUT_SHEET, INPUT_DELIMITER, INPUT_ENCODING
     global DEBUG, DRY_RUN, MAX_ROWS, MAX_COMPANIES, LOOKUP_MODE, FETCH_COMPANY_PROFILE
+    global PRETTY_OUTPUT
     global CH_WORKERS, CH_RATE_LIMIT_PER_SEC, CH_MAX_REQUESTS
     global CH_CA_BUNDLE, CH_VERIFY_SSL
 
@@ -2991,6 +3184,7 @@ def apply_cli_args(args):
     INPUT_ENCODING = args.encoding
 
     DEBUG = bool(args.debug)
+    PRETTY_OUTPUT = bool(args.pretty)
     DRY_RUN = bool(args.dry_run)
     MAX_ROWS = args.limit
     MAX_COMPANIES = args.limit_companies

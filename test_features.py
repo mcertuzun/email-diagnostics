@@ -132,7 +132,8 @@ class Patched(original):
 
 ED.CompaniesHouseClient = Patched
 os.environ["CH_API_KEY"] = "fake"
-ED.cli(["triage", "-i", "feat_in.xlsx", "-o", "feat_out.xlsx"])
+# --plain keeps the input row order, so the rows can be checked positionally
+ED.cli(["triage", "-i", "feat_in.xlsx", "-o", "feat_out.xlsx", "--plain"])
 ED.CompaniesHouseClient = original
 
 rows = list(openpyxl.load_workbook("feat_out.xlsx").active.iter_rows(values_only=True))

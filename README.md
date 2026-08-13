@@ -139,6 +139,7 @@ Input and output may each be `.xlsx` or `.csv`, chosen by extension, and they do
 | `-o`, `--output` | Output file; CSV or Excel by extension |
 | `-v`, `--verbose` | Log the decision for every row |
 | `--debug` | Add 11 audit columns to the output |
+| `--plain` | Excel only: no sorting, colouring or extra sheets; keeps the input row order |
 | `--dry-run` (`--no-ch`, `--skip-api`) | Never call Companies House; run the email analysis only. Skipped rows are marked `companies_house_skipped` |
 | `--limit N` | Process only the first N bounced **rows** |
 | `--limit-companies N` | Query at most N distinct **regnums** — this is what costs quota |
@@ -238,6 +239,22 @@ The surname is the anchor: it must match first (exactly, or within one edit), an
 
 ---
 
+## The output workbook
+
+An `.xlsx` output has three sheets. This is still **one file** — the original constraint was one file, not one sheet.
+
+**`Results`** — one row per contact. Sorted by `action` so the work queues come first and `investigate-all-correct` sits at the bottom, since those are the rows you do not need to read. The header is frozen and filterable, columns are sized to their content, and the `action` cell is colour-coded. `source_row` records the original position in the input, so sorting never costs you traceability.
+
+**`Summary`** — the action, result and reason distributions plus the run metadata: when it ran, which mode, how many rows, how many companies, how many HTTP requests. The console prints this too, but there it scrolls away.
+
+**`Companies`** — one row per company, not per contact. A different grain, not a copy: regnum, official name, status, how many contacts bounced there and how many of them have gone, with the active officers. Sorted so the companies with the most departures come first. This is the sheet that answers "which companies do I need to re-contact wholesale".
+
+There is deliberately no sheet per action: it would duplicate rows, break the one-row-per-contact rule and go out of sync as soon as you edit. The autofilter does the same job.
+
+`--plain` turns all of it off — one sheet, input order, no colour — if you are feeding the output into something else.
+
+CSV output cannot carry sheets or formatting. It still gets `action` and `source_row`; if you want the rest, write `.xlsx`.
+
 ## Output columns
 
 Every original column is preserved, with these appended:
@@ -250,6 +267,7 @@ Every original column is preserved, with these appended:
 | `ch_officer_name` | The official full name from Companies House, middle names included |
 | `ch_officer_status` | `active` / `resigned` / `possible_active` / `possible_resigned` / `not_found` / `lookup_failed` / `not_checked` |
 | `companyhouse_names` | The current registered company name |
+| `source_row` | The row's position in the input file, so sorted output stays traceable |
 | `active_officer_suggestions` | Who is currently in post, with their role, whenever this contact cannot be reached — either nobody matched or the person matched but has resigned. Capped at `ACTIVE_SUGGESTION_LIMIT` (2) names, with `+N more` when there are others |
 
 `--debug` adds 11 more audit columns: cleaned name parts, nicknames, company tokens, the matched pattern, the distance, the domain verdict and the regnum actually used.
@@ -408,6 +426,7 @@ python test_quota.py        # rows -> companies -> requests, measured
 python test_ch_first.py     # ch_first priority ladder and name matching
 python test_features.py     # acronym domain rule and the two added columns
 python test_action.py       # the action column, including the generic-mailbox split
+python test_sheets.py       # sorting, colouring, Summary and Companies sheets
 ```
 
 None of them need network access.
