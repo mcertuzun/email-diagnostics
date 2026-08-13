@@ -423,6 +423,94 @@ Rough guide: 1,000 distinct companies ≈ 20 minutes with the profile call, ≈ 
 
 ---
 
+## How the code works
+
+One file, `email_diagnostics.py`, about 3,400 lines in fifteen sections numbered 0 to 14. Everything you would normally change lives in section 0 at the top; the rest is ordered the way the data flows through it.
+
+| Section | Contains |
+|---|---|
+| 0 | Settings: paths, thresholds, vocabularies, rate limits |
+| 1 | The fixed `result`, `action` and `result_reason` values, as classes `R`, `A`, `RSN` |
+| 2 | Helpers: accent folding, `edit_distance`, the nickname map |
+| 3 | Loading Excel/CSV and validating columns |
+| 4 | Status filtering |
+| 5 | Cleaning names, companies and email addresses |
+| 6 | Generating expected email patterns and detecting typos |
+| 7 | The Companies House client, and finding the API key |
+| 8 | Officer matching |
+| 9 | Per-row orchestration |
+| 10 | Writing the workbook |
+| 11 | `main()` |
+| 12–14 | The `check` and `inspect` commands, and the CLI |
+
+### The path one row takes
+
+```
+load_data                 read the file, every value as text
+  validate_columns        confirm the six required columns exist
+filter_problematic_statuses   keep the bounce family, drop blocked
+  build_row_context       one dict per row; the original values are never touched
+    resolve_person_name   forename / middle names / surname, plus nickname candidates
+    clean_company_name    strip legal suffixes, leaving matchable tokens
+    parse_email           lower-case, validate, split into local part and domain
+    normalize_regnum      restore the leading zeros Excel dropped
+fetch_company_data        one thread pool, one request per distinct regnum
+  match_contact_to_officers   surname first, then forename
+finalise_ch_first         merge the verified name, then judge the email
+  detect_email_typo       compare the local part against the expected patterns
+  check_domain            compare the domain against the company name
+classify_action           collapse the diagnosis into one next step
+write_output              Results, the work queues, Summary, Companies
+```
+
+`build_row_context` produces a dict per row that carries the raw values, the cleaned ones and the verdicts. Nothing mutates the input row, which is what keeps the original columns intact in the output.
+
+### The parts that are not obvious
+
+These are the decisions that took a wrong turn first, and would look arbitrary without the reason.
+
+**`edit_distance` is Damerau, not plain Levenshtein.** The most common typing error is two letters swapping (`jhon` for `john`). Plain Levenshtein scores that as 2 edits, so `jhon.smiht@` sat outside the threshold and no typo was reported. Damerau scores a transposition as 1.
+
+**Pagination advances by `len(items)`, not by the requested page size.** `items_per_page` is a ceiling, not a promise, and its maximum is undocumented. Advancing by what was *asked for* sent an extra request per company and, worse, silently skipped every officer past the first page — a contact in the unread part came back as `no_officer_match_found`, which is a confidently wrong answer. The client also records the page size the server actually used, so the real limit comes from your own data rather than a guess.
+
+**`DomainCandidates` keeps two sets.** An acronym is information dense: `avzgroup` and `xyzgroup` are two characters apart and are unrelated companies. Acronym forms therefore go in the exact-match set only, and only full-word forms like `alivelizeynep` are compared by edit distance. Without the split, any similar acronym was reported as a domain typo.
+
+**`classify_action` reads the domain verdict, not just the reason.** `detect_email_typo` returns early for a generic mailbox and reports `result_reason` as `generic_mailbox` whatever the domain turned out to be, so `info@acme.co.uk`, `info@gmail.com` and `info@totallyunrelated.com` are identical by reason alone. The verdict is recorded separately, which is what keeps an unrelated domain out of the all-correct bucket.
+
+**`normalize_regnum` pads to eight characters.** Excel stores `01234567` as the number 1234567. Companies House then returns 404, and the row is reported as a lookup failure with no hint of the cause. This is also why the loader reads every value as text and why pandas is not used.
+
+**Officer matching anchors on the surname.** A forename may be an abbreviation, a nickname or one of several middle names, so it cannot carry the match. The surname must match first, exactly or within one edit, and only then is the forename considered. `former_names` is searched as well, which is what finds someone whose surname changed on marriage. Where the same person appears as both resigned and active, active wins.
+
+**The verified name is only trusted on a confident match.** In `finalise_ch_first` the official name is merged into the matching pool only when both surname and forename matched. Judging an email against the wrong person's name would produce a confidently wrong typo verdict, which is worse than no verdict.
+
+**A weak difference is never called a typo.** A separator difference, a nickname, or a local part under five characters is not a typo. Anything that resembles no pattern at all becomes `email_pattern_unrecognised` and continues to the officer check rather than being guessed at.
+
+**An SSL failure is not retried.** A handshake failure is permanent, so retrying burns time and quota and buries the cause. `SSLHandshakeError` is raised on the first attempt with the fixes listed in order.
+
+**A 401 aborts the entire run.** Otherwise a bad key writes `companies_house_lookup_failed` across thousands of rows and looks like a data problem.
+
+**The rate limiter sleeps inside the lock.** That is deliberate: it serialises the *pacing* across threads while each HTTP call happens outside the lock. Four workers exist to reach the 1.8/second ceiling reliably, not to exceed it.
+
+**Command line defaults are captured once at import.** `apply_cli_args` writes back to the module globals that the parser reads its defaults from, so a second `cli()` call in the same process inherited the first one's settings and silently queried fewer companies. `_capture_defaults()` freezes them before anything can be overwritten.
+
+**`.env.txt` is accepted.** Notepad's Save As appends `.txt` and Explorer hides extensions, so a file the user believes is `.env` is not. The loader accepts the common wrong names and says which file it used.
+
+### Where to change things safely
+
+| To change | Edit |
+|---|---|
+| Which statuses are analysed | `PROBLEMATIC_STATUS_KEYWORDS`, `EXCLUDED_STATUS_KEYWORDS` |
+| Nickname coverage | `NICKNAME_GROUPS` — groups, expanded both ways automatically |
+| How eagerly a typo is called | `TYPO_MAX_DISTANCE_*`, `MIN_LOCAL_LEN_FOR_TYPO` |
+| Domain acronym suffixes | `ACRONYM_DOMAIN_SUFFIXES` |
+| What each queue shows | `WORKLIST_SHEETS` — the sheet title, its actions and its columns |
+| How a diagnosis maps to a next step | `classify_action` |
+| Sheet order and colours | `ACTION_ORDER`, `ACTION_FILL` |
+
+Adding a `result` value means adding it to `R`, mapping it in `classify_action`, and adding a case to `test_action.py`. Leaving it out of `classify_action` sends it to `investigate-mismatched` rather than crashing, but that is a silent misfile rather than a useful default.
+
+---
+
 ## Tests
 
 ```bash
