@@ -247,13 +247,14 @@ An `.xlsx` output has three sheets. This is still **one file** — the original 
 
 **`Summary`** — the action, result and reason distributions plus the run metadata: when it ran, which mode, how many rows, how many companies, how many HTTP requests. The console prints this too, but there it scrolls away.
 
-**Work queue sheets** — one per queue that has rows: `Fix address (23)`, `Find new contact (11)`, `Investigate (7)`, `Fix data (2)`. The point is that a sheet can be handed to one person: the address corrections go to whoever maintains the list, the replacements go to whoever does the research. Filtering cannot do that.
+**Work queue sheets** — one per queue that has rows: `Fix address (23)`, `Find new contact (11)`, `Investigate (7)`, `Fix data (2)`, `No action (140)`. The point is that a sheet can be handed to one person: the address corrections go to whoever maintains the list, the replacements go to whoever does the research. Filtering cannot do that.
 
 These are narrow **views** of `Results`, not copies of it. Each carries only the columns its queue needs — `Find new contact` has the company and the suggestions, not the email pattern reasoning — and `source_row` is the first column on every one, so any line maps straight back. That also settles which sheet is authoritative: edit `Results`.
 
 Two deliberate choices:
 
-- **`investigate-all-correct` is not in the `Investigate` sheet.** It is usually the largest group and there is nothing to do with it, so including it would bury the rows that do need looking at. `Investigate` holds the three that need a human: `investigate-mismatched`, `investigate-uncertain-match`, `investigate-non-company-domain`. The all-correct rows stay in `Results`.
+- **`investigate-all-correct` gets its own `No action` sheet** rather than sitting inside `Investigate`. It is usually the largest group and nothing needs doing with it, so mixing it in would bury the rows that do need a human. `Investigate` holds the three that do: `investigate-mismatched`, `investigate-uncertain-match`, `investigate-non-company-domain`.
+- **`Fix address` carries both company names.** The input one so the row is recognisable, and the registered one because a domain typo is corrected against the real company name, not against whatever the source file happened to record.
 - **A queue with no rows gets no sheet**, and the row count is in the tab name. The tab bar then tells you the workload without opening anything.
 
 **`Companies`** — one row per company, not per contact. A different grain, not a copy: regnum, official name, status, how many contacts bounced there and how many of them have gone, with the active officers. Sorted so the companies with the most departures come first. This is the sheet that answers "which companies do I need to re-contact wholesale".

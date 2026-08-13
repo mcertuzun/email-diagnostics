@@ -204,13 +204,23 @@ check("does not carry email pattern noise", "result_reason" in find_header, Fals
 check("no Investigate sheet when nothing needs looking at",
       any(n.startswith("Investigate") for n in book.sheetnames), False)
 
+check("Fix address carries the input company", "company" in list(fix_rows[0]), True)
+check("Fix address carries the registered name",
+      "companyhouse_names" in list(fix_rows[0]), True)
+company_index = list(fix_rows[0]).index("company")
+check("  and it is populated", fix_rows[1][company_index], "Acme Trading Ltd")
+
 all_correct_rows = [r for r in data if r[action_index] == ED.A.ALL_CORRECT]
-check("all-correct rows exist in Results", len(all_correct_rows), 2)
-in_queues = 0
-for name in worklists:
-    for row in list(book[name].iter_rows(values_only=True))[1:]:
-        in_queues += 1
-check("queue rows exclude all-correct", in_queues, len(data) - len(all_correct_rows))
+no_action_name = [n for n in worklists if n.startswith("No action")][0]
+no_action_rows = list(book[no_action_name].iter_rows(values_only=True))
+check("No action sheet exists", no_action_name.startswith("No action"), True)
+check("holds every all-correct row", len(no_action_rows) - 1, len(all_correct_rows))
+check("all-correct is NOT in the Investigate queue",
+      any(n.startswith("Investigate") for n in worklists), False)
+
+in_queues = sum(len(list(book[name].iter_rows(values_only=True))) - 1
+                for name in worklists)
+check("every row lands in exactly one queue", in_queues, len(data))
 
 os.remove("sh_in.xlsx")
 os.remove("sh_out.xlsx")

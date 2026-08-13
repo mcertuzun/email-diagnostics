@@ -294,7 +294,7 @@ log = logging.getLogger("diagnostics")
 
 # Version: check with 'python email_diagnostics.py --version'.
 # Running a stale copy is the most common source of confusion on Windows.
-__version__ = "2.4.1"
+__version__ = "2.5.0"
 
 # Command line defaults are captured ONCE, here. Reading the module globals
 # when the parser is built would let one run's settings leak into the next,
@@ -2400,14 +2400,18 @@ MAX_COLUMN_WIDTH = 46
 # columns that queue needs, and source_row maps every line back. That keeps
 # it obvious which sheet is the source of truth.
 #
-# investigate-all-correct is deliberately absent. It is usually the largest
-# group and there is nothing to do with it, so putting it in the Investigate
-# sheet would bury the rows that do need looking at. Those rows stay in
-# Results only.
+# investigate-all-correct gets its own sheet rather than sitting inside
+# Investigate. It is usually the largest group and nothing needs doing with
+# it, so mixing it in would bury the rows that do need a human; on its own
+# sheet it is simply the pile you can ignore.
+#
+# Fix address carries both company names: the input one for recognition, and
+# the registered one because a domain typo is corrected against the real
+# company name, not against whatever the source file happened to record.
 WORKLIST_SHEETS = [
     ("Fix address", [A.FIX_ADDRESS],
-     ["source_row", "first_name", "last_name", "email",
-      "result", "result_reason", "ch_officer_name"]),
+     ["source_row", "first_name", "last_name", "company", "companyhouse_names",
+      "email", "result", "result_reason", "ch_officer_name"]),
     ("Find new contact", [A.FIND_NEW_CONTACT],
      ["source_row", "first_name", "last_name", "company", "companyhouse_names",
       "result", "active_officer_suggestions"]),
@@ -2417,6 +2421,9 @@ WORKLIST_SHEETS = [
     ("Fix data", [A.FIX_DATA],
      ["source_row", "first_name", "last_name", "email", "company", "regnum",
       "result", "result_reason"]),
+    ("No action", [A.ALL_CORRECT],
+     ["source_row", "first_name", "last_name", "company", "companyhouse_names",
+      "email", "result", "result_reason", "ch_officer_name"]),
 ]
 
 
