@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Sayfalama hatasini kanitlar: Companies House istenen items_per_page'den
-DAHA AZ kayit dondurdugunde kac istek gidiyor ve kayit kaybi var mi?
+Proves the pagination behaviour: when Companies House returns FEWER
+records than the requested items_per_page, how many requests are sent and
+are any records lost?
 
-Ag baglantisi yok - requests.Session.get sahte bir yanit uretecek sekilde
-degistirilir.
+No network access; requests.Session.get is replaced with a fake server.
 """
 import os
 import sys
@@ -25,8 +25,8 @@ class FakeResponse(object):
 
 class FakeServer(object):
     """
-    Gercek Companies House davranisi: items_per_page bir UST SINIRDIR.
-    Bu sunucu istenen ne olursa olsun sayfa basina en fazla PAGE_CAP dondurur.
+    Mirrors the real behaviour: items_per_page is a CEILING, not a promise.
+    This server returns at most PAGE_CAP records per page whatever is asked.
     """
     PAGE_CAP = 35
 
@@ -58,16 +58,16 @@ class FakeServer(object):
 
 def run(officer_count):
     server = FakeServer(officer_count)
-    client = ED.CompaniesHouseClient("sahte-anahtar", rate_per_second=10000)
+    client = ED.CompaniesHouseClient("fake-key", rate_per_second=10000)
     client._session.get = server.get
     officers = client.get_companies_house_officers("01234567")
     return len(server.calls), len(officers), client.stats["requests"]
 
 
 print("=" * 74)
-print(" SAYFALAMA TESTI  (sunucu sayfa basina en fazla 35 kayit donuyor)")
+print(" PAGINATION TEST  (server returns at most 35 records per page)")
 print("=" * 74)
-print("%-12s %-10s %-14s %-14s %s" % ("OFFICER", "ISTEK", "BEKLENEN", "BULUNAN", "SONUC"))
+print("%-12s %-10s %-14s %-14s %s" % ("OFFICERS", "REQUESTS", "EXPECTED", "FOUND", "RESULT"))
 print("-" * 74)
 
 failures = []
@@ -75,44 +75,44 @@ for officer_count, expected_requests in [(3, 1), (35, 1), (36, 2), (70, 2), (80,
     calls, found, counted = run(officer_count)
     ok_count = (found == officer_count)
     ok_requests = (calls == expected_requests)
-    verdict = "OK" if (ok_count and ok_requests) else "HATA"
+    verdict = "OK" if (ok_count and ok_requests) else "FAIL"
     if not ok_count:
-        failures.append("%d officer'dan sadece %d tanesi bulundu" % (officer_count, found))
+        failures.append("only %d of %d officers were found" % (found, officer_count))
     if not ok_requests:
-        failures.append("%d officer icin %d istek gitti, %d bekleniyordu"
+        failures.append("%d officers took %d requests, expected %d"
                         % (officer_count, calls, expected_requests))
     print("%-12s %-10s %-14s %-14s %s"
           % (officer_count, calls, expected_requests, found, verdict))
-    assert counted == calls, "sayac tutmuyor: %s vs %s" % (counted, calls)
+    assert counted == calls, "counter mismatch: %s vs %s" % (counted, calls)
 
 print()
-print("Istek sayaci her vakada gercek istek sayisiyla birebir tutuyor.")
+print("The request counter matches the real request count in every case.")
 
 # --max-requests sert freni
 print()
 print("=" * 74)
-print(" --max-requests SERT FRENI")
+print(" --max-requests HARD CEILING")
 print("=" * 74)
 server = FakeServer(500)
-client = ED.CompaniesHouseClient("sahte-anahtar", rate_per_second=10000, max_requests=3)
+client = ED.CompaniesHouseClient("fake-key", rate_per_second=10000, max_requests=3)
 client._session.get = server.get
 try:
     client.get_companies_house_officers("01234567")
-    failures.append("--max-requests siniri uygulanmadi")
-    print("HATA: sinir asildi")
+    failures.append("--max-requests ceiling was not enforced")
+    print("FAIL: ceiling exceeded")
 except ED.LookupFailed as exc:
     sent = len(server.calls)
     ok = sent <= 3
-    print("%s Sinir 3 iken gonderilen istek: %s  ->  %s"
-          % ("OK" if ok else "HATA", sent, exc))
+    print("%s Ceiling 3, requests sent: %s  ->  %s"
+          % ("OK" if ok else "FAIL", sent, exc))
     if not ok:
-        failures.append("sinir 3 iken %d istek gitti" % sent)
+        failures.append("ceiling was 3 but %d requests were sent" % sent)
 
 print()
 print("=" * 74)
 if failures:
-    print("%d SORUN:" % len(failures))
+    print("%d FAILURE(S):" % len(failures))
     for f in failures:
         print("   -", f)
     sys.exit(1)
-print("SAYFALAMA TESTLERI GECTI")
+print("PAGINATION TESTS PASSED")

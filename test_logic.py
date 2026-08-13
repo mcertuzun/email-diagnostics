@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Functional test harness for email_diagnostics.py (no network calls)."""
+"""Functional test harness for email_diagnostics.py. No network calls."""
 import os
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -69,18 +69,18 @@ nd = ED.resolve_person_name("Mr John", "Smith")
 cc = ED.generate_company_domain_candidates(ED.clean_company_name("Acme Trading Ltd"))
 
 typo_cases = [
-    ("john.smith@acme.co.uk",   None,               ED.RSN.PATTERN_OK,  "tam eslesme"),
-    ("johnsmith@acme.co.uk",    None,               ED.RSN.PATTERN_OK,  "ayrac farki -> typo DEGIL"),
-    ("j.smith@acme.co.uk",      None,               ED.RSN.PATTERN_OK,  "bas harf kalibi"),
-    ("jack.smith@acme.co.uk",   None,               ED.RSN.PATTERN_OK,  "lakap Jack=John"),
-    ("jhon.smith@acme.co.uk",   ED.R.FIRST_NAME_TYPO, None,             "ad typosu"),
-    ("john.smiith@acme.co.uk",  ED.R.SURNAME_TYPO,  None,               "soyad typosu"),
-    ("jhon.smiht@acme.co.uk",   ED.R.BOTH_TYPO,     None,               "ikisi birden"),
-    ("john.smith@acmee.co.uk",  ED.R.DOMAIN_TYPO,   None,               "domain typosu"),
+    ("john.smith@acme.co.uk",   None,               ED.RSN.PATTERN_OK,  "exact match"),
+    ("johnsmith@acme.co.uk",    None,               ED.RSN.PATTERN_OK,  "separator only -> NOT a typo"),
+    ("j.smith@acme.co.uk",      None,               ED.RSN.PATTERN_OK,  "initial pattern"),
+    ("jack.smith@acme.co.uk",   None,               ED.RSN.PATTERN_OK,  "nickname Jack=John"),
+    ("jhon.smith@acme.co.uk",   ED.R.FIRST_NAME_TYPO, None,             "forename typo"),
+    ("john.smiith@acme.co.uk",  ED.R.SURNAME_TYPO,  None,               "surname typo"),
+    ("jhon.smiht@acme.co.uk",   ED.R.BOTH_TYPO,     None,               "both parts"),
+    ("john.smith@acmee.co.uk",  ED.R.DOMAIN_TYPO,   None,               "domain typo"),
     ("info@acme.co.uk",         None,               ED.RSN.GENERIC,     "generic mailbox"),
-    ("john.smith@gmail.com",    None,               ED.RSN.PERSONAL_DOMAIN, "kisisel domain"),
-    ("xq7z@acme.co.uk",         None,               ED.RSN.UNRECOGNISED, "kisa/alakasiz -> typo DEGIL"),
-    ("john.smith@othercorp.com", None,              ED.RSN.DOMAIN_NOT_MATCHED, "farkli domain -> typo DEGIL"),
+    ("john.smith@gmail.com",    None,               ED.RSN.PERSONAL_DOMAIN, "personal domain"),
+    ("xq7z@acme.co.uk",         None,               ED.RSN.UNRECOGNISED, "short/unrelated -> NOT a typo"),
+    ("john.smith@othercorp.com", None,              ED.RSN.DOMAIN_NOT_MATCHED, "different domain -> NOT a typo"),
 ]
 for email, want_result, want_reason, note in typo_cases:
     info = ED.parse_email(email)
@@ -93,16 +93,16 @@ for email, want_result, want_reason, note in typo_cases:
         check(label, (got, out["reason"]), (None, want_reason))
 
 print()
-print("     -- 'js@' vakasi: Jasmine Susanne Smith --")
+print("     -- the 'js@' case: Jasmine Susanne Smith --")
 nd2 = ED.resolve_person_name("Jasmine Susanne", "Smith")
 out = ED.detect_email_typo(ED.parse_email("js@acme.co.uk"), nd2,
                            ED.generate_company_domain_candidates(ED.clean_company_name("Acme Ltd")))
-check("js@acme.co.uk  (bas harf, typo DEGIL)", (out["terminal"], out["reason"]),
+check("js@acme.co.uk  (initials, NOT a typo)", (out["terminal"], out["reason"]),
       (False, ED.RSN.PATTERN_OK))
 
 print()
 print("=" * 78)
-print("5) OFFICER MATCHING  (sahte Companies House yaniti)")
+print("5) OFFICER MATCHING  (fake Companies House response)")
 print("=" * 78)
 
 officers = [
@@ -121,29 +121,29 @@ officers = [
 ]
 
 m = ED.match_contact_to_officers(ED.resolve_person_name("John", "Smith"), officers)
-check("John Smith -> aktif + middle name", (m["status"], m["officer_name"]),
+check("John Smith -> active, with middle name", (m["status"], m["officer_name"]),
       ("active", "John Andrew Smith"))
 check("  reason", m["reason"], ED.RSN.WITH_MIDDLE_NAME)
 
 m = ED.match_contact_to_officers(ED.resolve_person_name("Sarah", "Jones"), officers)
-check("Sarah Jones -> istifa etmis", m["status"], "resigned")
+check("Sarah Jones -> resigned", m["status"], "resigned")
 
 m = ED.match_contact_to_officers(ED.resolve_person_name("Michael", "Jones"), officers)
-check("Michael Jones -> sadece soyad -> possible", m["status"], "possible_resigned")
+check("Michael Jones -> surname only -> possible", m["status"], "possible_resigned")
 check("  reason", m["reason"], ED.RSN.SURNAME_ONLY)
 
 m = ED.match_contact_to_officers(ED.resolve_person_name("Liz", "Brown"), officers)
-check("Liz Brown -> former_names + lakap ile bulundu",
+check("Liz Brown -> found via former_names and nickname",
       (m["status"], m["officer_name"]), ("active", "Elizabeth Taylor"))
 
 m = ED.match_contact_to_officers(ED.resolve_person_name("Peter", "Nobody"), officers)
-check("Peter Nobody -> eslesme yok", m["status"], "none")
+check("Peter Nobody -> no match", m["status"], "none")
 
 m = ED.match_contact_to_officers(ED.resolve_person_name("Big", "Corp"), officers)
-check("kurumsal officer parse hatasi vermiyor", m["status"], "none")
+check("corporate officer does not break parsing", m["status"], "none")
 
 print()
-print("     -- ayni kisi istifa + yeniden atanmis: AKTIF kazanmali --")
+print("     -- same person resigned then reappointed: ACTIVE must win --")
 dual = [
     {"name_elements": {"forename": "Mark", "surname": "White"}, "resigned_on": "2019-01-01"},
     {"name_elements": {"forename": "Mark", "surname": "White"}},
@@ -152,28 +152,28 @@ m = ED.match_contact_to_officers(ED.resolve_person_name("Mark", "White"), dual)
 check("Mark White -> active", m["status"], "active")
 
 print()
-print("     -- aile sirketi: iki farkli John Smith -> belirsiz --")
+print("     -- family company: two different John Smiths -> ambiguous --")
 family = [
     {"name_elements": {"forename": "John", "surname": "Smith"}},
     {"name_elements": {"forename": "John", "surname": "Smith", "other_forenames": "Peter"}},
 ]
 m = ED.match_contact_to_officers(ED.resolve_person_name("John", "Smith"), family)
-check("belirsizlik isaretlendi", m["reason"], ED.RSN.MULTIPLE_OFFICERS)
-check("  guven dusuruldu", m["confidence"], "possible")
+check("ambiguity flagged", m["reason"], ED.RSN.MULTIPLE_OFFICERS)
+check("  confidence downgraded", m["confidence"], "possible")
 
 print()
 print("=" * 78)
-print("6) REGNUM NORMALIZASYONU")
+print("6) REGNUM NORMALISATION")
 print("=" * 78)
-check("1234567 (Excel sifiri yemis)", ED.normalize_regnum("1234567"), "01234567")
+check("1234567 (Excel dropped the zero)", ED.normalize_regnum("1234567"), "01234567")
 check("01234567", ED.normalize_regnum("01234567"), "01234567")
 check("SC123456", ED.normalize_regnum("sc123456"), "SC123456")
-check("bosluklu ' 12 34 567 '", ED.normalize_regnum(" 12 34 567 "), "01234567")
-check("bos", ED.normalize_regnum(""), "")
+check("with spaces ' 12 34 567 '", ED.normalize_regnum(" 12 34 567 "), "01234567")
+check("empty", ED.normalize_regnum(""), "")
 
 print()
 print("=" * 78)
-print("7) STATU FILTRESI")
+print("7) STATUS FILTER")
 print("=" * 78)
 for status, want in [("Bounced", True), ("bounced back", True), ("Hard Bounce", True),
                      ("DELIVERY FAILED", True), ("undelivered", True), ("failed", True),
@@ -184,8 +184,8 @@ for status, want in [("Bounced", True), ("bounced back", True), ("Hard Bounce", 
 print()
 print("=" * 78)
 if FAIL:
-    print("%d TEST BASARISIZ:" % len(FAIL))
+    print("%d TEST FAILURE(S):" % len(FAIL))
     for f in FAIL:
         print("   -", f)
     sys.exit(1)
-print("TUM TESTLER GECTI")
+print("ALL TESTS PASSED")

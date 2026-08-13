@@ -1,15 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-ch_first modu testi (varsayilan mod).
+Tests for ch_first, the default mode.
 
-Dogruladiklari:
-  - N satir -> N Companies House sorgusu -> Excel'e N satir
-  - Sonuc onceligi: veri sorunu > istifa > typo > aktif
-  - Companies House'un resmi ismi (ORTA ADLAR dahil) e-posta kontrolunde
-    kullaniliyor; Excel'deki kisa isim yuzunden yanlis typo uretilmiyor
-  - Belirsiz eslesmede resmi isim BAZ ALINMIYOR
+Verifies:
+  - N rows -> N Companies House lookups -> N rows in the output
+  - result priority: data problem > resigned > typo > active
+  - the official name from Companies House, MIDDLE NAMES included, is used
+    for the email check, so a short name in the input does not cause a
+    false typo
+  - on an ambiguous match the official name is NOT used as the baseline
 
-Ag baglantisi yok.
+No network access.
 """
 import os
 import sys
@@ -30,7 +31,7 @@ class Resp(object):
         return self._payload
 
 
-# regnum -> officer kayitlari
+# regnum -> officer records
 REGISTRY = {
     "00000001": [{"name": "SMITH, John Andrew",
                   "name_elements": {"forename": "John", "other_forenames": "Andrew",
@@ -61,24 +62,24 @@ def fake_get(url, params=None, timeout=None):
     return Resp({"company_name": "ACME LTD", "company_status": "active"})
 
 
-# first_name, last_name, email, regnum, beklenen result, aciklama
+# first_name, last_name, email, regnum, expected result, note
 CASES = [
     ("John", "Smith", "john.andrew.smith@acme.co.uk", "00000001",
-     ED.R.ACTIVE, "orta adli e-posta, CH'den gelen 'Andrew' ile eslesiyor"),
+     ED.R.ACTIVE, "middle name in the address, matched via Andrew from CH"),
     ("Sarah", "Jones", "sarah.jones@acme.co.uk", "00000002",
-     ED.R.RESIGNED, "istifa etmis -> istifa typo'dan once gelir"),
+     ED.R.RESIGNED, "resigned -> resignation outranks a typo"),
     ("Sarah", "Jones", "sarahh.jones@acme.co.uk", "00000002",
-     ED.R.RESIGNED, "istifa + typo bir arada -> istifa kazanir"),
+     ED.R.RESIGNED, "resigned and a typo -> resignation wins"),
     ("Liz", "Taylor", "liz.taylor@acme.co.uk", "00000003",
-     ED.R.ACTIVE, "lakap Liz=Elizabeth, aktif"),
+     ED.R.ACTIVE, "nickname Liz=Elizabeth, active"),
     ("John", "Smith", "jhon.smith@acme.co.uk", "00000001",
-     ED.R.FIRST_NAME_TYPO, "aktif ama e-postada typo -> typo kazanir"),
+     ED.R.FIRST_NAME_TYPO, "active officer but a typo -> typo wins"),
     ("John", "Smith", "", "00000001",
-     ED.R.MISSING_EMAIL, "veri sorunu her seyin onunde"),
+     ED.R.MISSING_EMAIL, "a data problem outranks everything"),
     ("Alan", "Brown", "alan.brown@acme.co.uk", "00000004",
-     ED.R.ACTIVE, "ayni soyadli iki officer, ad ayirt ediyor"),
+     ED.R.ACTIVE, "two officers share a surname, the forename decides"),
     ("Mark", "White", "mark.white@acme.co.uk", "00000009",
-     ED.R.NO_OFFICER, "sirket kayitli degil -> officer bulunamadi"),
+     ED.R.NO_OFFICER, "company not in the registry -> no officer found"),
 ]
 
 
@@ -102,7 +103,7 @@ class Patched(original):
 
 
 ED.CompaniesHouseClient = Patched
-os.environ["CH_API_KEY"] = "sahte"
+os.environ["CH_API_KEY"] = "fake"
 ED.cli(["triage", "-i", "chf_in.xlsx", "-o", "chf_out.xlsx"])
 ED.CompaniesHouseClient = original
 
@@ -115,38 +116,38 @@ os.remove("chf_out.xlsx")
 
 problems = []
 print("=" * 88)
-print(" ch_first MODU")
+print(" ch_first MODE")
 print("=" * 88)
-print("%-3s %-30s %-46s %s" % ("#", "BEKLENEN", "GELEN", "SONUC"))
+print("%-3s %-30s %-46s %s" % ("#", "EXPECTED", "GOT", "RESULT"))
 print("-" * 88)
 for index, (case, row) in enumerate(zip(CASES, data), start=1):
     expected = case[4]
     got = row[result_index] or ""
     ok = got.split(":")[0].strip() == expected
     if not ok:
-        problems.append("%s -> beklenen %r, gelen %r  (%s)" % (index, expected, got, case[5]))
-    print("%-3s %-30s %-46s %s" % (index, expected, got[:46], "OK" if ok else "HATA"))
+        problems.append("%s -> expected %r, got %r  (%s)" % (index, expected, got, case[5]))
+    print("%-3s %-30s %-46s %s" % (index, expected, got[:46], "OK" if ok else "FAIL"))
     print("    %s" % case[5])
 
 print()
 print("-" * 88)
 unique_regnums = len(set(c[3] for c in CASES))
-print("Satir sayisi          : %s" % len(CASES))
-print("Excel'e yazilan satir : %s" % len(data))
-print("Benzersiz regnum      : %s" % unique_regnums)
-print("CH istegi             : %s" % len(calls))
+print("Rows in            : %s" % len(CASES))
+print("Rows written       : %s" % len(data))
+print("Distinct regnums   : %s" % unique_regnums)
+print("CH requests        : %s" % len(calls))
 
 if len(data) != len(CASES):
-    problems.append("Excel satir sayisi %s, %s bekleniyordu" % (len(data), len(CASES)))
-if len(calls) != unique_regnums * 2:      # profil kapali oldugundan sadece officers
+    problems.append("Wrote %s rows, expected %s" % (len(data), len(CASES)))
+if len(calls) != unique_regnums * 2:      # profile call is on, so two requests per company
     if len(calls) != unique_regnums:
-        problems.append("CH istegi %s, %s bekleniyordu" % (len(calls), unique_regnums))
+        problems.append("%s CH requests, expected %s" % (len(calls), unique_regnums))
 
 print()
 print("=" * 88)
 if problems:
-    print("%d SORUN:" % len(problems))
+    print("%d PROBLEM(S):" % len(problems))
     for p in problems:
         print("   -", p)
     sys.exit(1)
-print("ch_first TESTLERI GECTI")
+print("ch_first TESTS PASSED")

@@ -1,394 +1,401 @@
 # email-diagnostics
 
-Bounce eden (teslim edilemeyen) e-posta satırlarını analiz edip her satıra **tek bir teşhis** yazan Python scripti. Önce e-posta adresinin kişi ve şirket adıyla tutarlılığını kontrol eder; tutarlıysa kişinin ilgili şirkette **Companies House** kayıtlarında aktif mi yoksa istifa etmiş mi olduğuna bakar.
+Analyses bounced email rows and writes **one diagnosis per row**. It first verifies the contact against **Companies House** using the company number, then checks whether the email address is consistent with the verified name and the company.
 
-Çıktı **tek bir Excel dosyasıdır**. Girdi dosyasına dokunulmaz.
-
----
-
-## Önemli kısıt: hiçbir mail sunucusuna bağlanılmaz
-
-Script SMTP handshake yapmaz, `RCPT TO` denemez, doğrulama servisi (ZeroBounce vb.) kullanmaz, DNS/MX sorgusu bile atmaz. Tek dış bağlantı Companies House REST API'sidir.
-
-Bunun doğrudan sonucu: **bir adresin geçerli olduğu asla kanıtlanmaz.** `result` kolonu bir kanıt değil, "en olası açıklama"dır.
+The output is **a single file**. The input is never modified.
 
 ---
 
-## Kurulum
+## Hard constraint: no mail server is ever contacted
+
+No SMTP handshake, no `RCPT TO` probe, no verification service, not even a DNS/MX lookup. The Companies House REST API is the only outbound connection.
+
+The direct consequence: **an address can never be proven valid.** The `result` column is the most likely explanation, not proof.
+
+---
+
+## Install
 
 ```bash
 pip install -r requirements.txt
 ```
 
-İki paket yeterli: `openpyxl` ve `requests`.
+Two packages: `openpyxl` and `requests`.
 
-pandas/numpy bilinçli olarak kullanılmadı — Python 3.6 / Windows ortamlarında kurulum sorunlu, ayrıca pandas `regnum` alanını sayıya çevirip baştaki sıfırları siliyor (`01234567` → `1234567`), bu da Companies House'tan 404 almanıza yol açıyor. Fuzzy matching kütüphanesi de yok; Damerau-Levenshtein saf Python ile yazıldı, derleyici gerektirmez.
+pandas and numpy are deliberately avoided. They are awkward to install on Python 3.6 under Windows, and pandas turns `regnum` into a number and drops the leading zeros (`01234567` → `1234567`), which becomes a silent 404 from Companies House. There is no fuzzy-matching library either; the Damerau-Levenshtein distance is implemented in the script, so no compiler is needed.
 
-Python 3.6.5 ve üzeri ile çalışır (`dataclasses`, f-string, walrus gibi 3.7+ özellikleri kullanılmadı).
+Runs on Python 3.6.5 and above. No `dataclasses`, f-strings or walrus operators.
 
-## Companies House API anahtarı
+## API key
 
-Anahtar kodda **yazılı değildir**. Script sırayla şuralara bakar:
+The key is **never written into the code**. It is looked for, in order:
 
-1. `CH_API_KEY` ortam değişkeni
-2. Çalıştığınız klasördeki `.env` dosyası
-3. Script'in yanındaki `.env` dosyası
+1. the `CH_API_KEY` environment variable
+2. a `.env` file in the working directory
+3. a `.env` file next to the script
 
-| Ortam | Komut |
+| Shell | Command |
 |---|---|
-| Windows (kalıcı) | `setx CH_API_KEY "anahtar"` |
-| Windows (geçici) | `set CH_API_KEY=anahtar` — tırnak koymayın |
-| PowerShell | `$env:CH_API_KEY="anahtar"` |
-| macOS / Linux | `export CH_API_KEY="anahtar"` |
+| Windows, persistent | `setx CH_API_KEY "your_key"` |
+| Windows, session | `set CH_API_KEY=your_key` — no quotes |
+| PowerShell | `$env:CH_API_KEY="your_key"` |
+| macOS / Linux | `export CH_API_KEY="your_key"` |
 
-> **Windows'ta en sık yaşanan sorun:** `setx` sadece **yeni açılan** işlemleri etkiler. VS Code kullanıyorsanız yeni bir terminal sekmesi açmak yetmez — VS Code ortamını başlatıldığı anda alır, **tamamen kapatıp yeniden açmanız** gerekir.
+> **The most common Windows problem:** `setx` only affects **newly started** processes. If you use VS Code, opening a new terminal tab is not enough — VS Code inherits its environment at launch, so you must **close and reopen VS Code itself**.
 
-Uğraşmak istemiyorsanız alternatif: script'in yanına `.env` adlı bir dosya oluşturup içine tek satır yazın. Restart gerekmez, `.gitignore`'da olduğu için repoya da gitmez.
+The simpler alternative is a `.env` file next to the script. No restart needed, and it is in `.gitignore` so it never reaches the repository.
 
 ```
-CH_API_KEY=buraya_anahtar
+CH_API_KEY=your_key
 ```
 
-> **Windows'ta en sık ikinci sorun:** Not Defteri "Farklı kaydet" ile dosyaya sessizce `.txt` ekler, Gezgin de uzantıları gizlediği için dosya size `.env` görünür ama diskte `.env.txt`'tir. Script bu tuzağa düşmemek için `.env.txt` / `env.txt` adlarını da kabul eder ve kullandığında uyarır.
->
-> Dosyayı hatasız oluşturmak için PowerShell'de:
+> **The second most common Windows problem:** Notepad's *Save As* silently appends `.txt`, and Explorer hides extensions, so a file you see as `.env` is `.env.txt` on disk. The script accepts `.env.txt` and `env.txt` as well and warns you which file it used. To create it cleanly in PowerShell:
 >
 > ```powershell
-> Set-Content -Path .env -Value "CH_API_KEY=buraya_anahtar"
+> Set-Content -Path .env -Value "CH_API_KEY=your_key"
 > ```
 
-Anahtar bulunamazsa script **nerede ne bulduğunu** satır satır söyler — hangi klasörlere baktığını, `.env` dosyasının içinde hangi anahtarların olduğunu, adında `env` geçen başka dosya görüp görmediğini:
+If no key is found, the script reports **what it actually found** rather than just failing:
 
 ```
-[HATA] Anahtar bulunamadi
-  [yok]  CH_API_KEY ortam degiskeni tanimli degil
-  [!]    C:\Users\...\.env bulundu ama icinde CH_API_KEY yok.
-         Icindeki anahtarlar: COMPANIES_HOUSE_KEY
+[FAIL] No key found
+  [none] CH_API_KEY is not set
+  [!]    C:\Users\...\.env exists but has no CH_API_KEY.
+         Keys it does contain: COMPANIES_HOUSE_KEY
 ```
 
-Anahtarı [Companies House Developer Hub](https://developer.company-information.service.gov.uk/) üzerinden bir "REST API" uygulaması oluşturarak alırsınız.
+Get a key from the [Companies House Developer Hub](https://developer.company-information.service.gov.uk/) by creating a **REST API** application.
 
-## Hangi sürümü çalıştırıyorsunuz?
+---
+
+## Which version am I running?
 
 ```bash
 python email_diagnostics.py --version
 ```
 
-Beklenmedik bir `unrecognized arguments` hatası alıyorsanız neredeyse her zaman sebebi eski dosyadır — `git pull` yapıp sürümü kontrol edin.
+An unexpected `unrecognized arguments` error for a subcommand that exists almost always means a stale file. Pull and check the version.
 
-## Önce kurulumu doğrulayın
+## Verify the setup first
 
-Yeni bir bilgisayarda ilk komut bu olsun:
+On a new machine, run this before anything else:
 
 ```bash
 python email_diagnostics.py check
 ```
 
-Python sürümünü, paketleri ve API anahtarını sırayla kontrol eder; anahtar varsa Companies House'a **tek** test isteği atıp gerçekten çalıştığını doğrular. Eksik varsa nerede takıldığını ve nasıl düzelteceğinizi yazar.
+It checks the Python version, the packages, the TLS environment and the API key, then sends **one** request to Companies House to prove the key is actually accepted. If something is missing it says exactly what and how to fix it.
 
-Girdi dosyanızı da kontrol ettirebilirsiniz — okunabiliyor mu, zorunlu kolonlar var mı, kaç satır analiz edilecek:
+You can have it check your input file too:
 
 ```bash
-python email_diagnostics.py check --input liste.csv
+python email_diagnostics.py check --input list.csv
 ```
 
 ```
-[OK]   Dosya okundu: 1240 satir
-[OK]   Zorunlu kolonlarin hepsi var.
-[OK]   Analiz edilecek satir: 183 / 1240
-      Statu dagilimi:
+[OK]   File read: 1240 rows
+[OK]   All required columns are present.
+[OK]   Rows that will be analysed: 183 / 1240
+      Status distribution:
         Delivered                      890  -
         Opened                         167  -
-        Bounced                        142  analiz edilir
+        Bounced                        142  analysed
         Blocked                         41  -
-        hard bounce                     41  analiz edilir
-      Uyari: 3 satirda regnum bos.
+        hard bounce                     41  analysed
+      Warning: regnum is empty on 3 rows.
 ```
 
-`--skip-api` ile tamamen offline çalışır (test isteği bile atmaz).
+`--skip-api` keeps it fully offline.
 
-## Bir şirkette ne veri var, görmek için
+## Explore one company
 
 ```bash
 python email_diagnostics.py inspect 17107304
 ```
 
-O regnum için Companies House'un döndürdüğü **her alanı** listeler; script'in teşhis için fiilen kullandıkları `*` ile işaretlenir. `--raw` ham JSON'u basar. 2 istek harcar.
+Lists every field Companies House returns for that company number, marking with `*` the ones the diagnosis actually uses. `--raw` prints the untouched JSON. Costs two requests.
 
-## Çalıştırma
+---
 
-```bash
-python email_diagnostics.py triage --input liste.csv --output liste_sonuc.csv --verbose
-```
-
-Windows'ta:
+## Run
 
 ```bash
-python email_diagnostics.py triage --input "C:\Users\adiniz\Downloads\liste.csv" --output "C:\Users\adiniz\Downloads\liste_sonuc.csv" --verbose
+python email_diagnostics.py triage --input list.csv --output result.csv --verbose
 ```
 
-Girdi ve çıktı **`.xlsx` veya `.csv`** olabilir; uzantıya bakılarak otomatik seçilir. İkisi farklı da olabilir (CSV oku, Excel yaz).
+On Windows:
 
-### Bayraklar
+```bash
+python email_diagnostics.py triage --input "C:\Users\you\Downloads\list.csv" --output "C:\Users\you\Downloads\result.csv" --verbose
+```
 
-| Bayrak | Ne yapar |
+Input and output may each be `.xlsx` or `.csv`, chosen by extension, and they do not have to match — read CSV, write Excel if you like.
+
+### Flags
+
+| Flag | Effect |
 |---|---|
-| `-i`, `--input` | Girdi dosyası (`.xlsx` / `.xlsm` / `.csv` / `.tsv`) |
-| `-o`, `--output` | Çıktı dosyası — uzantısına göre CSV veya Excel yazılır |
-| `-v`, `--verbose` | Her satırın kararını tek tek yazar |
-| `--debug` | Çıktıya 11 denetim kolonu ekler |
-| `--dry-run` (`--no-ch`, `--skip-api`) | Companies House'a hiç gitmez; sadece typo analizi yapılır. Atlanan satırlara `companies_house_skipped` yazılır |
-| `--limit N` | Sadece ilk N problemli **satırı** işler |
-| `--limit-companies N` | En fazla N benzersiz **regnum** sorgulanır — kotayı belirleyen budur |
-| `--sheet AD` | Excel sayfa adı (varsayılan: ilk sayfa) |
-| `--delimiter` | CSV ayracı — verilmezse `;` `,` sekme `\|` arasından tahmin edilir |
-| `--encoding` | CSV kodlaması — verilmezse `utf-8-sig`, `cp1254`, `cp1252` sırayla denenir |
-| `--mode` | `ch_first` (varsayılan) veya `typo_first` — aşağıya bakın |
-| `--company-profile` | Resmî şirket adı + `company_dissolved` tespiti (şirket başına +1 istek) |
-| `--workers N` | Paralel thread sayısı (varsayılan 4) |
-| `--rate N` | Saniyedeki istek üst sınırı (varsayılan 1.8) |
-| `--max-requests N` | Toplam HTTP isteği üst sınırı — aşılırsa istek gönderilmez. Kota koruması |
+| `-i`, `--input` | Input file (`.xlsx` / `.xlsm` / `.csv` / `.tsv`) |
+| `-o`, `--output` | Output file; CSV or Excel by extension |
+| `-v`, `--verbose` | Log the decision for every row |
+| `--debug` | Add 11 audit columns to the output |
+| `--dry-run` (`--no-ch`, `--skip-api`) | Never call Companies House; run the email analysis only. Skipped rows are marked `companies_house_skipped` |
+| `--limit N` | Process only the first N bounced **rows** |
+| `--limit-companies N` | Query at most N distinct **regnums** — this is what costs quota |
+| `--max-requests N` | Hard ceiling on total HTTP requests; once reached, nothing further is sent |
+| `--mode` | `ch_first` (default) or `typo_first` |
+| `--no-company-profile` | Skip the profile request. Saves one request per company, but leaves `companyhouse_names` empty and cannot detect dissolved companies |
+| `--sheet NAME` | Excel sheet name (default: the first sheet) |
+| `--delimiter` | CSV delimiter — guessed from the header row if omitted |
+| `--encoding` | CSV encoding — tries `utf-8-sig`, `cp1254`, `cp1252` in turn |
+| `--ca-bundle PATH` | Corporate root certificate, for networks that intercept TLS |
+| `--insecure` | Turn off certificate verification. Unsafe; for diagnosis only |
+| `--workers N` | Parallel threads (default 4) |
+| `--rate N` | Requests per second (default 1.8) |
 
-Bayrak verilmezse dosyanın en üstündeki varsayılanlar kullanılır.
-
-İlk deneme için önerilen komut — kotayı hiç harcamaz:
+A good first run, which spends no quota at all:
 
 ```bash
-python email_diagnostics.py triage -i liste.csv -o deneme.csv --limit 50 --dry-run --debug --verbose
+python email_diagnostics.py triage -i list.csv -o trial.csv --limit 50 --no-ch --debug --verbose
 ```
 
-### Girdi dosyası
+### Input file
 
-İlk satır başlık. Şu kolonlar zorunlu (büyük/küçük harf, boşluk ve BOM farkları tolere edilir):
+First row is the header. These columns are required; case, spacing and BOM differences are tolerated:
 
 `first_name` · `last_name` · `email` · `company` · `regnum` · `status`
 
-`regnum` = Companies House şirket numarası. `status` = gönderim durumu.
+`regnum` is the Companies House company number. `status` is the delivery status.
 
-CSV tarafında Türkiye/Avrupa Excel çıktıları da doğrudan çalışır: `;` ayracı ve `cp1254`/`cp1252` kodlaması otomatik algılanır, çıktı Excel'in Türkçe karakterleri doğru açması için `utf-8-sig` (BOM'lu) yazılır.
+European Excel exports work as they are: a `;` delimiter and `cp1254`/`cp1252` encoding are detected automatically, and the output is written as `utf-8-sig` so Excel renders accented characters correctly.
 
-> **Not:** CSV çıktısını Excel'de açarsanız Excel `01234567` gibi `regnum` değerlerini yine sayıya çevirip baştaki sıfırı gizleyebilir. Bu Excel'in davranışıdır, dosyanın içeriği doğrudur — sorun yaşarsanız çıktıyı `.xlsx` olarak alın.
-
----
-
-## Akış
-
-1. **Yükleme + doğrulama** — zorunlu kolonlar eksikse hangilerinin eksik olduğunu söyleyen net bir hata verir.
-2. **Statü filtresi** — sadece bounce ailesi satırlar işlenir. `blocked` bilinçli olarak **hariçtir**: spam filtresi/IP reputation kaynaklıdır, adresin yanlışlığı veya kişinin ayrılmasıyla ilgisi yoktur.
-3. **Temizleme** — unvan (`Mr`, `Dr`), rol (`CEO`, `Director`), UK post-nominal (`MBE`, `FCA`) hem ad hem soyad alanından ayıklanır; parantezli lakaplar (`John (Jack)`) ayrı aday olarak saklanır; `last_name` tam ad içeriyorsa (`John Smith`) akıllıca bölünür; soyad ön ekleri (`van der`, `Mc`) korunur; şirket adından hukuki ekler atılır. **Orijinal değerler değiştirilmez**, temizlik yalnızca eşleştirme içindir.
-4. **Companies House** — her satır için officer listesi sorgulanır, kişi **soyad öncelikli** eşleştirilir, resmî tam ad (orta adlar dahil) alınır.
-5. **E-posta kontrolü** — artık resmî isim elde olduğu için e-posta ona göre denetlenir.
-6. **Tek Excel çıktısı** + konsola sonuç dağılımı.
-
-### İki mod
-
-**`ch_first` (varsayılan).** Her satır Companies House'a gider: **N satır = N sorgu** (aynı regnum tekrar sorgulanmaz). Kişinin resmî adı alınıp e-posta ona göre denetlenir. Doğruluk kazancı somut — Excel'de `John Smith` yazan ama e-postası `john.andrew.smith@` olan bir kişi:
-
-| Mod | Sonuç |
-|---|---|
-| `typo_first` | `email_pattern_unrecognised` — orta adı bilmiyor |
-| `ch_first` | `email_matches_expected_pattern` — CH'den `Andrew` geldi |
-
-**`typo_first`.** Önce typo kontrolü; typo bulunan satır API'ye **hiç** gitmez. Kotayı korur, ama isim doğrulaması Excel'deki kirli veriye dayanır.
-
-### Sonuç önceliği (`ch_first`)
-
-`veri sorunu` (missing/malformed email) → `şirket kapalı / API hatası` → **`istifa`** → `typo` → `aktif`
-
-İstifa typo'dan önce gelir: kişi ayrıldıysa doğru yazılmış bir adres de bounce eder. `result_reason` her satırda e-posta değerlendirmesini taşır, yani iki bilgiyi birden alırsınız.
-
-### Typo tespiti nasıl çalışıyor
-
-Ad, soyad, orta ad, lakaplar ve baş harflerden `first.last`, `flast`, `f.last`, `lastfirst`, `f.m.last` gibi kalıplar 4 ayraçla (`.` `_` `-` ve bitişik) üretilir. Lakaplar iki yönlü bir sözlükle genişletilir (`Bob`↔`Robert`, `Jack`↔`John`, `Liz`↔`Elizabeth`…).
-
-Karşılaştırma bilinçli olarak **muhafazakârdır** — zayıf farklara "typo" demez:
-
-| Durum | Sonuç |
-|---|---|
-| Tam eşleşme | tutarlı |
-| Sadece ayraç farkı (`johnsmith` ≡ `john.smith`) | tutarlı, typo **değil** |
-| Lakap eşleşmesi (`jack.smith` ← John Smith) | tutarlı |
-| 1–2 karakter mesafe (`jhon.smith`) | **typo** |
-| Hiçbir kalıba yakın değil | `email_pattern_unrecognised` — typo **değil**, CH'ye devam |
-| 5 karakterden kısa local part (`js@`) | asla typo değil; baş harf kombinasyonları denenir |
-
-Mesafe hesabı **Damerau-Levenshtein**'dır: en yaygın yazım hatası iki harfin yer değiştirmesidir (`jhon` ← `john`), düz Levenshtein bunu 2 hata sayıp eşiği kaçırır.
-
-Domain kontrolünde sırasıyla tam eşleşme → en az 2 karakterlik anlamlı ek ile içerme (`acme` → `acmegroup` ✔) → 1–2 mesafe typo (`acmee` ✘) bakılır. Şirket adından kısaltma da üretilir: *Ali Veli Zeynep Ltd* → `avz`, `alivelizeynep`, `aliveli`. Alakasız domain **typo sayılmaz** — holding/grup domaini olabilir.
-
-### Officer eşleştirme
-
-Soyad çapadır: önce soyad tutmalı (tam eşleşme veya ≤1 mesafe), sonra ad değerlendirilir. Companies House'un yapısal `name_elements` alanı kullanılır, string bölme yapılmaz. `former_names` de taranır — evlilik nedeniyle değişmiş soyadları böyle yakalanır.
-
-- Soyad + ad tuttu → **confident** (`active_officer_match` / `resigned_officer_match`)
-- Sadece baş harf veya sadece soyad tuttu → **possible**
-- Aynı soyadlı birden fazla officer (aile şirketleri) → belirsiz olarak işaretlenir, güven düşürülür
-- Aynı kişinin hem istifa hem aktif kaydı varsa **aktif kazanır**
-- Kurumsal officer'lar (`corporate-director`) atlanır
+> **Note:** if you open the CSV output in Excel, Excel may again turn `01234567` into a number and hide the leading zero. That is Excel's behaviour, not a problem with the file — write `.xlsx` output if it bothers you.
 
 ---
 
-## Çıktı kolonları
+## Pipeline
 
-Orijinal kolonların tamamı korunur, sonlarına eklenir:
+1. **Load and validate** — a missing required column produces a clear error naming exactly which ones are missing.
+2. **Status filter** — only the bounce family is processed. `blocked` is excluded deliberately: it comes from spam filtering or IP reputation and says nothing about a wrong address or a departed person.
+3. **Clean** — titles (`Mr`, `Dr`), role words (`CEO`, `Director`) and UK post-nominals (`MBE`, `FCA`) are stripped from **both** name fields; bracketed nicknames (`John (Jack)`) are kept as candidates; a `last_name` holding a full name (`John Smith`) is split; surname particles (`van der`, `Mc`) are preserved; legal suffixes are removed from the company name. **The original values are never modified** — cleaning is only for matching.
+4. **Companies House** — the officer list is fetched for each row and the contact is matched **surname first**, yielding the official full name including middle names.
+5. **Email check** — the address is judged against that verified name.
+6. **One output file**, plus a result distribution printed to the console.
 
-| Kolon | İçerik |
+### The two modes
+
+**`ch_first` (default).** Every row goes to Companies House: **N rows = N lookups**, with each distinct regnum queried only once. The person's official name is fetched and the email judged against it. The accuracy gain is concrete — for a contact stored as `John Smith` whose address is `john.andrew.smith@`:
+
+| Mode | Result |
 |---|---|
-| `result` | Birincil teşhis |
-| `result_reason` | Kısa destekleyici gerekçe |
-| `ch_officer_name` | Companies House'tan gelen resmî tam ad (orta adlar dahil) |
+| `typo_first` | `email_pattern_unrecognised` — the middle name is unknown |
+| `ch_first` | `email_matches_expected_pattern` — Companies House supplied `Andrew` |
+
+**`typo_first`.** Typo check first; a row with a typo never reaches the API. Cheaper, but the name check relies on whatever the input file contains.
+
+### Result priority (`ch_first`)
+
+`data problem` (missing/malformed email) → `company closed / API failure` → **`resigned`** → `typo` → `active`
+
+Resignation outranks a typo: once someone has left, a correctly spelled address bounces too. `result_reason` carries the email verdict on every row, so you get both facts.
+
+### How typo detection works
+
+Patterns like `first.last`, `flast`, `f.last`, `lastfirst` and `f.m.last` are generated from the forename, surname, middle names, nicknames and initials, across four separators (`.`, `_`, `-`, and none). Nicknames expand both ways through a dictionary (`Bob`↔`Robert`, `Jack`↔`John`, `Liz`↔`Elizabeth` …).
+
+The comparison is deliberately **conservative** — a weak difference is never called a typo:
+
+| Situation | Verdict |
+|---|---|
+| Exact match | consistent |
+| Separator difference only (`johnsmith` ≡ `john.smith`) | consistent, **not** a typo |
+| Nickname match (`jack.smith` for John Smith) | consistent |
+| 1–2 characters apart (`jhon.smith`) | **typo** |
+| Nowhere near any pattern | `email_pattern_unrecognised` — **not** a typo, continues to CH |
+| Local part shorter than 5 characters (`js@`) | never a typo; initial combinations are tried |
+
+The distance is **Damerau-Levenshtein**: the most common typing mistake is two letters swapping places (`jhon` for `john`), and plain Levenshtein scores that as 2 edits and misses the threshold.
+
+### Domain matching
+
+Checked in order: exact match → containment with a real affix (`acme` → `acmegroup` ✔) → 1–2 characters apart (`acmee` ✘).
+
+Acronyms are generated for companies whose name has **two or more words**, on their own and followed by a company word: *Ali Veli Zeynep Ltd* → `avz`, `avzltd`, `avzgroup`, `avzuk`, `avzholdings`, alongside `alivelizeynep` and `aliveli`. A single-word company is excluded, since a one-letter acronym would match almost anything.
+
+Acronym forms are used for **exact matching only, never for distance comparison**. `avzgroup` and `xyzgroup` are two characters apart but are unrelated companies, so allowing acronyms into the fuzzy pass would report any similar acronym as a domain typo.
+
+An unrelated domain is **not** called a typo — it may be a group or parent-company domain.
+
+### Officer matching
+
+The surname is the anchor: it must match first (exactly, or within one edit), and only then is the forename considered. The structured `name_elements` field is used rather than string splitting, and `former_names` is searched too, which is what catches surnames changed by marriage.
+
+- surname **and** forename match → **confident**
+- initial only, or surname only → **possible**
+- several officers share the surname (common in family companies) → flagged ambiguous, confidence downgraded
+- the same person appears as both resigned and active → **active wins**
+- corporate officers (`corporate-director`) are skipped
+
+---
+
+## Output columns
+
+Every original column is preserved, with these appended:
+
+| Column | Contents |
+|---|---|
+| `result` | The primary diagnosis |
+| `result_reason` | A short supporting reason |
+| `ch_officer_name` | The official full name from Companies House, middle names included |
 | `ch_officer_status` | `active` / `resigned` / `possible_active` / `possible_resigned` / `not_found` / `lookup_failed` / `not_checked` |
+| `companyhouse_names` | The registered company name, followed by any former names, separated by ` \| ` |
+| `active_officer_suggestions` | When nobody matched: who is currently in post, with their role — so the contact can be replaced instead of the row just being marked unresolved |
 
-`DEBUG = True` yapılırsa 11 denetim kolonu daha eklenir (temizlenmiş ad/soyad, lakaplar, şirket token'ları, eşleşen kalıp, mesafe, kullanılan regnum…).
+`--debug` adds 11 more audit columns: cleaned name parts, nicknames, company tokens, the matched pattern, the distance, the domain verdict and the regnum actually used.
 
-### `result` değerleri
+### `result` values
 
-`missing_email` · `malformed_email` · `first_name_typo` · `surname_typo` · `first_name_and_surname_typo` · `domain_typo` · `active_officer_match: <isim>` · `resigned_officer_match: <isim>` · `possible_officer_match_active: <isim>` · `possible_officer_match_resigned: <isim>` · `no_officer_match_found` · `company_not_found` · `company_dissolved` · `companies_house_lookup_failed` · `companies_house_skipped` · `missing_regnum`
+`missing_email` · `malformed_email` · `first_name_typo` · `surname_typo` · `first_name_and_surname_typo` · `domain_typo` · `active_officer_match: <name>` · `resigned_officer_match: <name>` · `possible_officer_match_active: <name>` · `possible_officer_match_resigned: <name>` · `no_officer_match_found` · `company_not_found` · `company_dissolved` · `companies_house_lookup_failed` · `companies_house_skipped` · `missing_regnum`
 
-`companies_house_lookup_failed` gerçek bir hatadır (API'ye ulaşılamadı). `companies_house_skipped` ise `--no-ch` ile bilerek atlandığı anlamına gelir — ikisini karıştırmayın.
+`companies_house_lookup_failed` is a real failure — the API could not be reached. `companies_house_skipped` means it was skipped on purpose with `--no-ch`. Do not confuse the two.
 
-### `result_reason` değerleri
+### `result_reason` values
 
 `email_matches_expected_pattern` · `generic_mailbox` · `personal_email_domain` · `email_pattern_unrecognised` · `domain_not_matched` · `close_to_expected_pattern` · `matched_including_middle_name` · `surname_only_match` · `multiple_possible_officers` · `api_error` · `name_fields_empty`
 
 ---
 
-## Ayarlar
+## Settings
 
-Hepsi dosyanın en üstünde:
+Most settings have a command line equivalent. These live only in the file, at the top:
 
-Çoğu ayarın komut satırı karşılığı var (yukarıdaki tabloya bakın). Yalnızca dosyadan değiştirilebilenler:
-
-| Ayar | Ne işe yarar |
+| Setting | Purpose |
 |---|---|
-| `PROBLEMATIC_STATUS_KEYWORDS` | Hangi statülerin analiz edileceği |
-| `EXCLUDED_STATUS_KEYWORDS` | Hangi statülerin dışlanacağı (`blocked` burada) |
-| `NICKNAME_GROUPS` | Lakap sözlüğü — istediğiniz kadar genişletin |
-| `TYPO_MAX_DISTANCE_*` | Typo eşikleri |
-| `GENERIC_MAILBOXES` | `info@`, `accounts@` gibi kişiye ait olmayan kutular |
-| `COMPANY_STOPWORDS` | Şirket adından atılacak hukuki ekler |
-| `FREE_EMAIL_DOMAINS` | Kişisel e-posta sağlayıcıları |
-
-## Rate limit ve performans
-
-Companies House limiti **5 dakikada 600 istek** (= 2/sn). Script 4 thread ve saniyede 1.8 istek throttle ile çalışır; thread'ler tavanı *doldurmaya* yarar, tavanı aşamaz. Aynı `regnum` bir kez sorgulanır. `401` alınırsa tüm çalışma anında durur (binlerce satıra boşuna `lookup_failed` yazmamak için), `429` ve `5xx` için exponential backoff uygulanır, officer listesi sayfalanır (35'ten fazla officer'ı olan şirketler için şart).
-
-Kaba tahmin: 1.000 farklı şirket ≈ 10 dakika.
-
-Çalışma sonunda **gerçekten gönderilen** istek sayısı raporlanır — tahmin değil, sayaç:
-
-```
-Companies House: 12 HTTP istegi / 10 sirket  (sirket basina 1.20)
-  bunun 1 tanesi yeniden deneme, 0 tanesi rate limit (429), 0 sirket basarisiz
-```
-
-### Kaç istek gider?
-
-**Şirket başına 1 istek.** Bundan fazlası yalnızca iki sebeple olur:
-
-1. **Sayfalama.** Companies House'un `total_results` değeri **istifa etmiş officer'ları da sayar**, dolayısıyla köklü şirketlerde liste tek sayfaya sığmaz. Bu indirgenemez.
-
-   `items_per_page` üst sınırı Companies House dokümantasyonunda **belirtilmemiştir**. Script varsayım yapmaz: sunucunun yanıtta bildirdiği gerçek sayfa boyutunu okur, sayfalamayı ona göre ilerletir ve çalışma sonunda raporlar (`Sunucunun sayfa basina dondurdugu azami kayit: N`). Kendi verinizdeki gerçek rakamı ilk çalıştırmada görürsünüz.
-2. **Yeniden deneme.** Timeout, 429 veya 5xx sonrası.
-
-`--limit` **satır** sayısını sınırlar, şirket sayısını değil — 10 satır 3 farklı regnum taşıyorsa yalnızca 3 şirket sorgulanır. Kotayı doğrudan sınırlamak için `--limit-companies N` kullanın; sert tavan için `--max-requests N` (sınır aşılınca istek hiç gönderilmez).
-
-Sahte bir sunucuyla ölçülmüş gerçek rakamlar (`python test_quota.py`):
-
-| Senaryo | İstek |
-|---|---|
-| `--limit 10`, 10 farklı küçük şirket | 10 |
-| `--limit 10`, satırlar 4 şirketi paylaşıyor | 4 |
-| `--limit 10`, 10 şirket × 70 officer | 20 |
-| `--limit-companies 3`, 70 officer'lı şirketler | 6 |
-
-`python test_pagination.py` de sayfalamayı ayrıca doğrular. İkisi de ağ gerektirmez.
-
-## Testler
-
-```bash
-python test_logic.py   # birim testler: temizleme, typo, officer eşleştirme, regnum, statü
-python test_e2e.py     # uçtan uca: gerçek .xlsx oluşturur, çalıştırır, çıktıyı doğrular
-```
-
-Ağ bağlantısı gerektirmezler.
+| `PROBLEMATIC_STATUS_KEYWORDS` | Which statuses are analysed |
+| `EXCLUDED_STATUS_KEYWORDS` | Which statuses are excluded (`blocked` is here) |
+| `NICKNAME_GROUPS` | The nickname dictionary — extend it freely |
+| `ACRONYM_DOMAIN_SUFFIXES` | Words that follow an acronym in a domain |
+| `TYPO_MAX_DISTANCE_*` | Typo thresholds |
+| `GENERIC_MAILBOXES` | Non-personal mailboxes such as `info@`, `accounts@` |
+| `COMPANY_STOPWORDS` | Legal suffixes stripped from company names |
+| `FREE_EMAIL_DOMAINS` | Personal email providers |
 
 ---
 
-## Neden şirket şirket sorguluyoruz?
+## `SSL: bad handshake`
 
-Companies House'ta **officer'ları toplu indirmenin bir yolu yok.** `/company/{regnum}/officers` tasarımı gereği tek şirketliktir; "bana şu 500 şirketin officer'larını ver" diyebileceğiniz bir uç nokta yoktur. API anahtarının türü bunu değiştirmez — bu bir yetki seviyesi değil, API'nin şekli.
+Common on corporate networks. A firewall (Zscaler, Netskope, Fortinet, Cisco Umbrella) or antivirus SSL scanning (Kaspersky, ESET, Avast) intercepts TLS and presents its own certificate, which is not in Python's store. The failure is permanent, so the script stops immediately rather than retrying through it.
 
-Ücretsiz toplu veri ürünleri var ama officer içermiyorlar:
-
-| Ürün | İçerik | Officer var mı? |
-|---|---|---|
-| [Free Company Data Product](https://download.companieshouse.gov.uk/en_output.html) | Tüm aktif şirketler: numara, ad, durum, adres, SIC | **Hayır** |
-| [PSC Data Product](https://download.companieshouse.gov.uk/en_pscdata.html) | Persons with Significant Control anlık görüntüsü | Hayır (PSC ≠ officer, ama küçük şirketlerde büyük ölçüde örtüşür) |
-| [Accounts Data Product](https://download.companieshouse.gov.uk/en_accountsdata.html) | Elektronik sunulan finansal tablolar | Hayır |
-
-**Ama Free Company Data Product yine de işinize yarar:** aylık ücretsiz bir CSV olarak tüm şirketlerin numarasını, resmî adını ve durumunu (`active` / `dissolved`) içerir. Bunu indirip yerelden okursanız `--company-profile`'ın yaptığı işi **sıfır API isteğiyle** yaparsınız — resmî şirket adı ve kapanmış şirket tespiti bedavaya gelir. Bu entegrasyon henüz yazılmadı; ihtiyaç olursa eklenebilir.
-
-## `SSL: bad handshake` alıyorsam?
-
-Kurumsal ağlarda çok yaygın. Güvenlik duvarı (Zscaler, Netskope, Fortinet, Cisco Umbrella) veya antivirüsün SSL taraması (Kaspersky, ESET, Avast) TLS trafiğini keser ve kendi sertifikasını sunar; o sertifika Python'ın deposunda olmadığı için el sıkışma başarısız olur.
-
-Sırayla deneyin:
-
-**1. Windows sertifika deposunu kullanın** — kurumsal ağlarda en temizi. Kurumun kök sertifikası Windows'ta zaten kayıtlıdır:
+**1. Use the Windows certificate store** — cleanest on a corporate network. Your organisation's root is already registered there:
 
 ```bash
 pip install pip-system-certs
 ```
 
-**2. Kök sertifikayı dosya olarak verin:**
+**2. Supply the root certificate as a file:**
 
 ```bash
-python email_diagnostics.py triage -i liste.csv -o sonuc.csv --ca-bundle C:\yol\kurum-root.pem
+python email_diagnostics.py triage -i list.csv -o result.csv --ca-bundle C:\path\corp-root.pem
 ```
 
-`.pem` dosyasını BT ekibinizden isteyebilir veya `certmgr.msc` → Güvenilen Kök Sertifika Yetkilileri'nden dışa aktarabilirsiniz. `REQUESTS_CA_BUNDLE` ortam değişkeni de çalışır.
+Ask IT for the `.pem`, or export it from `certmgr.msc` → Trusted Root Certification Authorities. `REQUESTS_CA_BUNDLE` works too.
 
-**3. Proxy gerekiyorsa:** `set HTTPS_PROXY=http://proxy.kurum.local:8080`
+**3. If a proxy is required:** `set HTTPS_PROXY=http://proxy.company.local:8080`
 
-**4. Sertifika deposu eskiyse:** `pip install --upgrade certifi`
+**4. If the certificate store is stale:** `pip install --upgrade certifi`
 
-**Son çare:** `--insecure` doğrulamayı kapatır. API anahtarınız doğrulanmamış bir bağlantıdan geçer — sadece sorunun kaynağını teyit etmek için kullanın, kalıcı çözüm olarak değil. Aktifken her çalıştırmada uyarı basar.
+**Last resort:** `--insecure` turns verification off. Your API key then travels over an unverified connection — use it to confirm the diagnosis, not as a fix. It prints a warning on every run.
 
-`check` komutu OpenSSL sürümünü, proxy ve CA ayarlarını da gösterir:
+`check` reports the OpenSSL version and any proxy or CA settings in effect.
 
-```
-[OK]   OpenSSL   OpenSSL 1.0.2o
-       HTTPS_PROXY        http://proxy.kurum.local:8080
-```
+## API failures
 
-## API hatası alıyorsam?
-
-`companies_house_lookup_failed` gördüğünüzde script artık **gerçek sebebi** yazar:
+When you see `companies_house_lookup_failed`, the script now names the real cause:
 
 ```
-WARNING  01234567 sorgulanamadi: HTTP 500
-WARNING  07654321 sorgulanamadi: baglanti: baglanti zaman asimi
-WARNING    Basarisiz sorgular (sebep -> adet):
+WARNING  01234567 lookup failed: HTTP 500
+WARNING  07654321 lookup failed: connection: read timeout
+WARNING    Failed lookups (cause -> count):
 WARNING      failed: HTTP 500                          12
 WARNING      not_found                                  3
 ```
 
-| Belirti | Anlamı |
+| Symptom | Meaning |
 |---|---|
-| `HTTP 401` / `403` | Anahtar reddedildi — çalışma anında durur. `check` ile doğrulayın |
-| `HTTP 404` → `company_not_found` | O regnum sicilde yok. Baştaki sıfır kaybı olabilir — `--debug` ile `dbg_regnum_used` kolonuna bakın |
-| `HTTP 429` | Rate limit. `--rate` düşürün (varsayılan 1.8/sn) |
-| `HTTP 5xx` | Companies House tarafında geçici arıza; 3 kez denenir |
-| `baglanti: ...` | Ağ/proxy/güvenlik duvarı. Kurumsal ağdaysanız `HTTPS_PROXY` ayarlayın |
+| `HTTP 401` / `403` | Key rejected — the run stops immediately. Verify with `check` |
+| `HTTP 404` → `company_not_found` | That regnum is not in the register. Check `dbg_regnum_used` with `--debug` for a lost leading zero |
+| `HTTP 429` | Rate limited. Lower `--rate` (default 1.8/s) |
+| `HTTP 5xx` | A transient fault at Companies House; retried three times |
+| `connection: ...` | Network, proxy or firewall. Set `HTTPS_PROXY` on a corporate network |
 
-## Bilinen sınırlar
+---
 
-- `result` bir kanıt değil, en olası açıklamadır. Bounce'un sebebi ne typo ne istifa olabilir (kutu dolu, kutu silinmiş, spam filtresi, sunucu arızası).
-- Domain eşleştirmesi şirketin **tescilli** adına dayanır. Marka/ticari ad farklıysa `domain_not_matched` çıkar — bu bilinçli olarak typo sayılmaz.
-- Companies House yalnızca **officer** (direktör, sekreter, LLP üyesi) kayıtlarını tutar. Listeniz officer'lardan oluşmuyorsa `no_officer_match_found` baskın çıkar ve anlam taşımaz.
-- Çıktı dosyası kişisel veri içerir. GDPR kapsamında saklama ve paylaşım sorumluluğu sizdedir.
+## Why one company at a time?
 
-## Lisans
+**There is no way to bulk-download officers from Companies House.** `/company/{regnum}/officers` is per company by design; there is no endpoint that takes a list of companies. The type of API key does not change this — it is the shape of the API, not a permission level.
+
+The free bulk products exist but contain no officers:
+
+| Product | Contents | Officers? |
+|---|---|---|
+| [Free Company Data Product](https://download.companieshouse.gov.uk/en_output.html) | Every live company: number, name, status, address, SIC | **No** |
+| [PSC Data Product](https://download.companieshouse.gov.uk/en_pscdata.html) | Persons with Significant Control snapshot | No (PSC ≠ officer, though they overlap heavily in small companies) |
+| [Accounts Data Product](https://download.companieshouse.gov.uk/en_accountsdata.html) | Electronically filed accounts | No |
+
+The Free Company Data Product is still worth knowing about: it is a free monthly CSV carrying the number, official name and status (`active` / `dissolved`) of every company. Reading it locally would do the job of `--company-profile` at **zero API cost**. That integration is not written yet.
+
+## How many requests?
+
+**One request per company for the officers, plus one for the profile** (the profile call is on by default because it fills `companyhouse_names`; `--no-company-profile` turns it off).
+
+Beyond that, only two things add requests:
+
+1. **Pagination.** `total_results` counts **resigned officers too**, so a long-established company does not fit in one page. This is irreducible.
+
+   The maximum for `items_per_page` is **not documented**. The script does not assume one: it reads the page size the server reports, advances by the records actually returned, and prints the largest page seen (`Largest page the server returned: N records`).
+
+2. **Retries** after a timeout, a 429 or a 5xx.
+
+`--limit` bounds **rows**, not companies — ten rows carrying three distinct regnums means only three companies are queried. Use `--limit-companies N` to bound what costs quota, and `--max-requests N` for a hard ceiling that stops requests being sent at all.
+
+Measured against a fake server that caps pages at 35 records (`python test_quota.py`):
+
+| Scenario | Requests |
+|---|---|
+| `--limit 10`, 10 small companies | 20 |
+| `--limit 10`, rows sharing 4 companies | 8 |
+| `--limit 10`, 10 companies of 70 officers | 30 |
+| `--limit-companies 3`, 70-officer companies | 9 |
+| `--no-company-profile`, 10 small companies | 10 |
+
+The Companies House limit is **600 requests per 5 minutes** (2.0/s). The script runs 4 threads behind a shared 1.8/s throttle — the threads exist to reach that ceiling reliably, not to exceed it. A `401` aborts the whole run rather than writing thousands of pointless failures.
+
+Rough guide: 1,000 distinct companies ≈ 20 minutes with the profile call, ≈ 10 minutes without.
+
+---
+
+## Tests
+
+```bash
+python test_logic.py        # cleaning, typo detection, officer matching, regnum, status
+python test_e2e.py          # end to end: builds a real file, runs, verifies the output
+python test_pagination.py   # pagination against a fake server, and --max-requests
+python test_quota.py        # rows -> companies -> requests, measured
+python test_ch_first.py     # ch_first priority ladder and name matching
+python test_features.py     # acronym domain rule and the two added columns
+```
+
+None of them need network access.
+
+---
+
+## Known limits
+
+- `result` is the most likely explanation, not proof. A bounce may be neither a typo nor a resignation — a full mailbox, a deleted mailbox, spam filtering or a server fault.
+- Domain matching works from the **registered** name. Where the trading name differs, the result is `domain_not_matched`, which is deliberately not treated as a typo.
+- Companies House holds **officers** only: directors, secretaries and LLP members. If your list is not made of officers, `no_officer_match_found` will dominate and mean little.
+- The output contains personal data. Retention and sharing are your responsibility under GDPR.
+
+## Licence
 
 MIT
