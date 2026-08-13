@@ -244,6 +244,7 @@ Every original column is preserved, with these appended:
 
 | Column | Contents |
 |---|---|
+| `action` | What to do about the row — see below |
 | `result` | The primary diagnosis |
 | `result_reason` | A short supporting reason |
 | `ch_officer_name` | The official full name from Companies House, middle names included |
@@ -252,6 +253,28 @@ Every original column is preserved, with these appended:
 | `active_officer_suggestions` | Who is currently in post, with their role, whenever this contact cannot be reached — either nobody matched or the person matched but has resigned. Capped at `ACTIVE_SUGGESTION_LIMIT` (2) names, with `+N more` when there are others |
 
 `--debug` adds 11 more audit columns: cleaned name parts, nicknames, company tokens, the matched pattern, the distance, the domain verdict and the regnum actually used.
+
+### `action` values
+
+`result` has 16 values, which is too many to work through by hand. `action`
+collapses them into seven queues, so you can filter the sheet by what needs
+doing rather than by diagnosis.
+
+| `action` | Covers | Next step |
+|---|---|---|
+| `fix-address` | `*_typo`, `malformed_email`, `missing_email` | Correct the address yourself |
+| `find-new-contact` | `resigned_officer_match`, `no_officer_match_found`, `company_dissolved` | The person is gone — use `active_officer_suggestions` |
+| `investigate-all-correct` | Active officer, address consistent with the name, domain is the company's | Nothing wrong was found. The bounce is a mail-system matter: full mailbox, deleted mailbox, spam filter, server fault |
+| `investigate-non-company-domain` | Active officer, but the address is on a personal provider (gmail, hotmail…) | The domain carries no company signal, so nothing can be concluded from it |
+| `investigate-mismatched` | Active officer, but the domain is unrelated to the company, or the address bears no resemblance to the name | Not close enough to call a typo; needs a human eye |
+| `investigate-uncertain-match` | `possible_officer_match_*` — only the surname or only an initial matched | Confirm who this person is before concluding anything |
+| `fix-data` | `missing_regnum`, `company_not_found`, `companies_house_lookup_failed`, `companies_house_skipped`, empty name fields | Fix the input or rerun |
+
+Most rows usually land in `investigate-all-correct`, and those are the ones you do **not** need to read. The other six are the real work queue.
+
+> `investigate-all-correct` does **not** mean the address is valid. Since no mail server is ever contacted, that can never be established — it means nothing was found wrong in the places this tool can look.
+
+**A note on how the classification is derived.** It reads three things: `result`, `result_reason` and the recorded domain verdict. The verdict is needed because `detect_email_typo` returns early for a generic mailbox and reports `result_reason` as `generic_mailbox` whatever the domain turned out to be. By reason alone, `info@acme.co.uk`, `info@gmail.com` and `info@totallyunrelated.com` are indistinguishable; the verdict is what sends them to `investigate-all-correct`, `investigate-non-company-domain` and `investigate-mismatched` respectively.
 
 ### `result` values
 
@@ -384,6 +407,7 @@ python test_pagination.py   # pagination against a fake server, and --max-reques
 python test_quota.py        # rows -> companies -> requests, measured
 python test_ch_first.py     # ch_first priority ladder and name matching
 python test_features.py     # acronym domain rule and the two added columns
+python test_action.py       # the action column, including the generic-mailbox split
 ```
 
 None of them need network access.

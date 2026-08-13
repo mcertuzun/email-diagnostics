@@ -293,7 +293,7 @@ log = logging.getLogger("diagnostics")
 
 # Version: check with 'python email_diagnostics.py --version'.
 # Running a stale copy is the most common source of confusion on Windows.
-__version__ = "2.1.0"
+__version__ = "2.2.0"
 
 # Command line defaults are captured ONCE, here. Reading the module globals
 # when the parser is built would let one run's settings leak into the next,
@@ -338,6 +338,23 @@ class R(object):
     RESIGNED = "resigned_officer_match"
     POSSIBLE_ACTIVE = "possible_officer_match_active"
     POSSIBLE_RESIGNED = "possible_officer_match_resigned"
+
+
+class A(object):
+    """
+    The action column: what to DO about the row.
+
+    result has 16 values, which is too many to work through by hand. Each one
+    maps to one of these next steps, so the output becomes a small number of
+    work queues instead of a list of diagnoses.
+    """
+    FIX_ADDRESS = "fix-address"
+    FIND_NEW_CONTACT = "find-new-contact"
+    ALL_CORRECT = "investigate-all-correct"
+    NON_COMPANY_DOMAIN = "investigate-non-company-domain"
+    MISMATCHED = "investigate-mismatched"
+    UNCERTAIN_MATCH = "investigate-uncertain-match"
+    FIX_DATA = "fix-data"
 
 
 class RSN(object):
@@ -2017,6 +2034,61 @@ def match_contact_to_officers(name_data, officers):
 # SECTION 9 - ROW PROCESSING AND ORCHESTRATION
 # ====================================================================
 
+def classify_action(context):
+    """
+    Turn (result, result_reason, domain_verdict) into one next step.
+
+    The domain verdict is needed as a third input, not just the reason.
+    detect_email_typo returns early for a generic mailbox and reports
+    result_reason as generic_mailbox whatever the domain turned out to be,
+    so info@acme.co.uk, info@gmail.com and info@totallyunrelated.com are
+    indistinguishable by reason alone. The verdict is recorded separately,
+    which is what keeps an unrelated domain out of the all-correct bucket.
+    """
+    result = (context["result"] or "").split(":")[0].strip()
+    reason = context["reason"] or ""
+    domain_verdict = (context["typo"] or {}).get("domain_verdict", "")
+
+    # Something is wrong with the address and you can correct it yourself.
+    if result in (R.FIRST_NAME_TYPO, R.SURNAME_TYPO, R.BOTH_TYPO,
+                  R.DOMAIN_TYPO, R.MALFORMED_EMAIL, R.MISSING_EMAIL):
+        return A.FIX_ADDRESS
+
+    # The person is gone. active_officer_suggestions names who is still there.
+    if result in (R.RESIGNED, R.NO_OFFICER, R.COMPANY_DISSOLVED):
+        return A.FIND_NEW_CONTACT
+
+    # Nothing usable came back, or the input row is incomplete.
+    if result in (R.MISSING_REGNUM, R.COMPANY_NOT_FOUND, R.LOOKUP_FAILED,
+                  R.CH_SKIPPED) or reason == RSN.NO_NAME:
+        return A.FIX_DATA
+
+    # We are not confident we found the right person, so nothing can be
+    # concluded about their address until a human confirms the identity.
+    if result in (R.POSSIBLE_ACTIVE, R.POSSIBLE_RESIGNED):
+        return A.UNCERTAIN_MATCH
+
+    if result == R.ACTIVE:
+        # An exact pattern match only survives when the domain matched too;
+        # a personal or unmatched domain rewrites the reason.
+        if reason == RSN.PATTERN_OK:
+            return A.ALL_CORRECT
+        if reason == RSN.GENERIC:
+            if domain_verdict == "ok":
+                return A.ALL_CORRECT
+            if domain_verdict == "personal":
+                return A.NON_COMPANY_DOMAIN
+            return A.MISMATCHED
+        if reason == RSN.PERSONAL_DOMAIN:
+            return A.NON_COMPANY_DOMAIN
+        # domain_not_matched or email_pattern_unrecognised: the address does
+        # not line up with the name or the company, but not closely enough
+        # to call it a typo.
+        return A.MISMATCHED
+
+    return A.MISMATCHED
+
+
 def build_row_context(row, index_map):
     """Build the analysis context for one row, leaving the original values intact."""
     raw_first = row[index_map["first_name"]]
@@ -2287,7 +2359,8 @@ def apply_companies_house(context, company_data):
 # SECTION 10 - WRITING THE OUTPUT
 # ====================================================================
 
-OUTPUT_COLUMNS = ["result", "result_reason", "ch_officer_name", "ch_officer_status",
+OUTPUT_COLUMNS = ["action", "result", "result_reason",
+                  "ch_officer_name", "ch_officer_status",
                   "companyhouse_names", "active_officer_suggestions"]
 
 DEBUG_COLUMNS = [
@@ -2307,6 +2380,7 @@ def _build_output_headers(original_headers):
 def _build_output_row(context):
     values = list(context["row"])
     values.extend([
+        classify_action(context),
         context["result"] or "",
         context["reason"] or "",
         context["officer_name"] or "",
@@ -2380,12 +2454,22 @@ def print_summary(contexts):
         label = (context["result"] or "").split(":")[0].strip() or "(empty)"
         counts[label] = counts.get(label, 0) + 1
 
-    log.info("-" * 52)
-    log.info("RESULT DISTRIBUTION (%s rows)", len(contexts))
+    actions = OrderedDict()
+    for context in contexts:
+        key = classify_action(context)
+        actions[key] = actions.get(key, 0) + 1
+
+    log.info("-" * 58)
+    log.info("ACTION DISTRIBUTION (%s rows)", len(contexts))
+    for label, count in sorted(actions.items(), key=lambda kv: -kv[1]):
+        share = 100.0 * count / len(contexts) if contexts else 0.0
+        log.info("  %-38s %5s  (%4.1f%%)", label, count, share)
+    log.info("-" * 58)
+    log.info("RESULT DISTRIBUTION")
     for label, count in sorted(counts.items(), key=lambda kv: -kv[1]):
         share = 100.0 * count / len(contexts) if contexts else 0.0
         log.info("  %-38s %5s  (%4.1f%%)", label, count, share)
-    log.info("-" * 52)
+    log.info("-" * 58)
 
 
 # ====================================================================
