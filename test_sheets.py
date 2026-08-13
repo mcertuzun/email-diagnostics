@@ -100,8 +100,15 @@ def check(label, got, want):
 print("=" * 92)
 print(" SHEETS")
 print("=" * 92)
-check("sheet names", book.sheetnames, ["Results", "Summary", "Companies"])
+print("     %s" % book.sheetnames)
 check("Results opens first", book.sheetnames[0], "Results")
+check("Summary and Companies present",
+      "Summary" in book.sheetnames and "Companies" in book.sheetnames, True)
+
+worklists = [n for n in book.sheetnames if n not in ("Results", "Summary", "Companies")]
+check("row counts in the tab names", all("(" in n for n in worklists), True)
+check("empty queues get no sheet",
+      any(n.startswith("Fix data") for n in book.sheetnames), False)
 
 results = book["Results"]
 rows = list(results.iter_rows(values_only=True))
@@ -167,6 +174,42 @@ check("company with departures sorted first", cdata[0][0], "00000002")
 check("  and it counts both of them", cdata[0][gone_index], 2)
 sugg_index = cheader.index("active_officer_suggestions")
 check("suggestions carried through", "Nina New" in (cdata[0][sugg_index] or ""), True)
+
+print()
+print("=" * 92)
+print(" WORK QUEUE SHEETS")
+print("=" * 92)
+for name in worklists:
+    sheet = book[name]
+    rows = list(sheet.iter_rows(values_only=True))
+    print("     %-28s %s rows   %s" % (name, len(rows) - 1,
+                                       ", ".join(str(c) for c in rows[0])))
+
+fix_name = [n for n in worklists if n.startswith("Fix address")][0]
+fix_rows = list(book[fix_name].iter_rows(values_only=True))
+check("Fix address holds only its own rows", len(fix_rows) - 1, 1)
+check("narrow view, not a copy of Results",
+      len(fix_rows[0]) < len(header), True)
+check("source_row is the first column", fix_rows[0][0], "source_row")
+
+find_name = [n for n in worklists if n.startswith("Find new contact")][0]
+find_rows = list(book[find_name].iter_rows(values_only=True))
+check("Find new contact row count", len(find_rows) - 1, 2)
+find_header = list(find_rows[0])
+check("carries the suggestions column",
+      "active_officer_suggestions" in find_header, True)
+check("does not carry email pattern noise", "result_reason" in find_header, False)
+
+check("no Investigate sheet when nothing needs looking at",
+      any(n.startswith("Investigate") for n in book.sheetnames), False)
+
+all_correct_rows = [r for r in data if r[action_index] == ED.A.ALL_CORRECT]
+check("all-correct rows exist in Results", len(all_correct_rows), 2)
+in_queues = 0
+for name in worklists:
+    for row in list(book[name].iter_rows(values_only=True))[1:]:
+        in_queues += 1
+check("queue rows exclude all-correct", in_queues, len(data) - len(all_correct_rows))
 
 os.remove("sh_in.xlsx")
 os.remove("sh_out.xlsx")

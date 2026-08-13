@@ -247,9 +247,16 @@ An `.xlsx` output has three sheets. This is still **one file** — the original 
 
 **`Summary`** — the action, result and reason distributions plus the run metadata: when it ran, which mode, how many rows, how many companies, how many HTTP requests. The console prints this too, but there it scrolls away.
 
-**`Companies`** — one row per company, not per contact. A different grain, not a copy: regnum, official name, status, how many contacts bounced there and how many of them have gone, with the active officers. Sorted so the companies with the most departures come first. This is the sheet that answers "which companies do I need to re-contact wholesale".
+**Work queue sheets** — one per queue that has rows: `Fix address (23)`, `Find new contact (11)`, `Investigate (7)`, `Fix data (2)`. The point is that a sheet can be handed to one person: the address corrections go to whoever maintains the list, the replacements go to whoever does the research. Filtering cannot do that.
 
-There is deliberately no sheet per action: it would duplicate rows, break the one-row-per-contact rule and go out of sync as soon as you edit. The autofilter does the same job.
+These are narrow **views** of `Results`, not copies of it. Each carries only the columns its queue needs — `Find new contact` has the company and the suggestions, not the email pattern reasoning — and `source_row` is the first column on every one, so any line maps straight back. That also settles which sheet is authoritative: edit `Results`.
+
+Two deliberate choices:
+
+- **`investigate-all-correct` is not in the `Investigate` sheet.** It is usually the largest group and there is nothing to do with it, so including it would bury the rows that do need looking at. `Investigate` holds the three that need a human: `investigate-mismatched`, `investigate-uncertain-match`, `investigate-non-company-domain`. The all-correct rows stay in `Results`.
+- **A queue with no rows gets no sheet**, and the row count is in the tab name. The tab bar then tells you the workload without opening anything.
+
+**`Companies`** — one row per company, not per contact. A different grain, not a copy: regnum, official name, status, how many contacts bounced there and how many of them have gone, with the active officers. Sorted so the companies with the most departures come first. This is the sheet that answers "which companies do I need to re-contact wholesale".
 
 `--plain` turns all of it off — one sheet, input order, no colour — if you are feeding the output into something else.
 

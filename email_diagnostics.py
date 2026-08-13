@@ -294,7 +294,7 @@ log = logging.getLogger("diagnostics")
 
 # Version: check with 'python email_diagnostics.py --version'.
 # Running a stale copy is the most common source of confusion on Windows.
-__version__ = "2.3.0"
+__version__ = "2.4.0"
 
 # Command line defaults are captured ONCE, here. Reading the module globals
 # when the parser is built would let one run's settings leak into the next,
@@ -2105,6 +2105,8 @@ def build_row_context(row, index_map):
 
     return {
         "row": row,
+        "raw": {"first_name": raw_first, "last_name": raw_last, "email": raw_email,
+                "company": raw_company, "regnum": raw_regnum},
         "name": name_data,
         "company_tokens": company_tokens,
         "company_candidates": generate_company_domain_candidates(company_tokens),
@@ -2393,6 +2395,93 @@ ACTION_FILL = {
 
 MAX_COLUMN_WIDTH = 46
 
+# One sheet per queue of work, so a sheet can be handed to one person.
+# These are narrow VIEWS of Results, not copies of it: each carries only the
+# columns that queue needs, and source_row maps every line back. That keeps
+# it obvious which sheet is the source of truth.
+#
+# investigate-all-correct is deliberately absent. It is usually the largest
+# group and there is nothing to do with it, so putting it in the Investigate
+# sheet would bury the rows that do need looking at. Those rows stay in
+# Results only.
+WORKLIST_SHEETS = [
+    ("Fix address", [A.FIX_ADDRESS],
+     ["source_row", "first_name", "last_name", "email",
+      "result", "result_reason", "ch_officer_name"]),
+    ("Find new contact", [A.FIND_NEW_CONTACT],
+     ["source_row", "first_name", "last_name", "company", "companyhouse_names",
+      "result", "active_officer_suggestions"]),
+    ("Investigate", [A.MISMATCHED, A.UNCERTAIN_MATCH, A.NON_COMPANY_DOMAIN],
+     ["source_row", "first_name", "last_name", "email", "action",
+      "result", "result_reason", "ch_officer_name", "companyhouse_names"]),
+    ("Fix data", [A.FIX_DATA],
+     ["source_row", "first_name", "last_name", "email", "company", "regnum",
+      "result", "result_reason"]),
+]
+
+
+def _worklist_value(context, column):
+    """Read one worklist column from a row context."""
+    raw = context.get("raw") or {}
+    if column in ("first_name", "last_name", "email", "company", "regnum"):
+        return raw.get(column, "")
+    if column == "action":
+        return classify_action(context)
+    if column == "result":
+        return context["result"] or ""
+    if column == "result_reason":
+        return context["reason"] or ""
+    if column == "ch_officer_name":
+        return context["officer_name"] or ""
+    if column == "companyhouse_names":
+        return context["company_name"] or ""
+    if column == "active_officer_suggestions":
+        return context["suggestions"] or ""
+    if column == "source_row":
+        return context["source_row"] or ""
+    return ""
+
+
+def _write_worklist_sheets(workbook, contexts):
+    """
+    Add one sheet per queue that actually has rows.
+
+    Empty queues get no sheet at all: the tab bar then shows what needs doing
+    without opening anything, and the row counts are in the tab names for the
+    same reason.
+    """
+    from openpyxl.styles import Font
+
+    by_action = {}
+    for context in contexts:
+        by_action.setdefault(classify_action(context), []).append(context)
+
+    created = []
+    for title, actions, columns in WORKLIST_SHEETS:
+        rows = []
+        for action in actions:
+            rows.extend(by_action.get(action, []))
+        if not rows:
+            continue                      # no work, no sheet
+        rows.sort(key=lambda c: (classify_action(c), c["source_row"]))
+
+        # Excel caps sheet names at 31 characters.
+        name = "{} ({})".format(title, len(rows))[:31]
+        sheet = workbook.create_sheet(name)
+        sheet.append(columns)
+        for cell in sheet[1]:
+            cell.font = Font(bold=True)
+        for context in rows:
+            sheet.append([_worklist_value(context, column) for column in columns])
+
+        sheet.freeze_panes = "A2"
+        from openpyxl.utils import get_column_letter
+        sheet.auto_filter.ref = "A1:{}{}".format(
+            get_column_letter(len(columns)), len(rows) + 1)
+        _autosize(sheet, columns, len(rows))
+        created.append((name, len(rows)))
+    return created
+
 DEBUG_COLUMNS = [
     "dbg_clean_first", "dbg_clean_middles", "dbg_clean_surname", "dbg_nicknames",
     "dbg_company_tokens", "dbg_email_local", "dbg_email_domain",
@@ -2478,7 +2567,7 @@ def _style_results_sheet(sheet, headers, row_count):
     _autosize(sheet, headers, row_count)
 
 
-def _write_summary_sheet(workbook, contexts, run_stats):
+def _write_summary_sheet(workbook, contexts, run_stats, worklists=None):
     """
     Counts and run metadata, so the numbers survive the console scrollback.
     Written first in the book order but after Results so Results opens first.
@@ -2498,6 +2587,13 @@ def _write_summary_sheet(workbook, contexts, run_stats):
     heading("RUN")
     for label, value in (run_stats or {}).items():
         sheet.append([label, value])
+
+    if worklists:
+        heading("WORK QUEUES")
+        sheet.append(["Each queue below is a narrow view of Results."])
+        sheet.append(["Edit Results; source_row maps every line back to the input."])
+        for name, count in worklists:
+            sheet.append([name, count])
 
     total = len(contexts)
     for title, values in (
@@ -2604,7 +2700,8 @@ def write_output(path, original_headers, contexts, meta=None, run_stats=None):
 
             if PRETTY_OUTPUT:
                 _style_results_sheet(results, headers, len(ordered))
-                _write_summary_sheet(workbook, contexts, run_stats)
+                created = _write_worklist_sheets(workbook, contexts)
+                _write_summary_sheet(workbook, contexts, run_stats, created)
                 _write_companies_sheet(workbook, contexts)
             else:
                 results.freeze_panes = "A2"
