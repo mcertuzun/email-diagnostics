@@ -294,7 +294,7 @@ log = logging.getLogger("diagnostics")
 
 # Version: check with 'python email_diagnostics.py --version'.
 # Running a stale copy is the most common source of confusion on Windows.
-__version__ = "2.5.0"
+__version__ = "3.0.0"
 
 # Command line defaults are captured ONCE, here. Reading the module globals
 # when the parser is built would let one run's settings leak into the next,
@@ -351,11 +351,16 @@ class A(object):
     """
     FIX_ADDRESS = "fix-address"
     FIND_NEW_CONTACT = "find-new-contact"
-    ALL_CORRECT = "investigate-all-correct"
-    NON_COMPANY_DOMAIN = "investigate-non-company-domain"
-    MISMATCHED = "investigate-mismatched"
+    DISSOLVED_COMPANY = "dissolved-company"
+    POSSIBLE_RESIGNED = "possible-resigned"
+    REVIEW_OFFICER_LIST = "review-officer-list"
     UNCERTAIN_MATCH = "investigate-uncertain-match"
+    MISMATCHED = "investigate-mismatched"
     FIX_DATA = "fix-data"
+    GENERIC_MAILBOX = "generic-mailbox"
+    NON_COMPANY_DOMAIN = "non-company-domain"
+    GENERIC_MAILBOX_NON_COMPANY_DOMAIN = "generic-mailbox-non-company-domain"
+    ALL_CORRECT = "all-correct"
 
 
 class RSN(object):
@@ -2055,18 +2060,32 @@ def classify_action(context):
                   R.DOMAIN_TYPO, R.MALFORMED_EMAIL, R.MISSING_EMAIL):
         return A.FIX_ADDRESS
 
-    # The person is gone. active_officer_suggestions names who is still there.
-    if result in (R.RESIGNED, R.NO_OFFICER, R.COMPANY_DISSOLVED):
+    # The person has left. active_officer_suggestions names who is still there.
+    if result == R.RESIGNED:
         return A.FIND_NEW_CONTACT
+
+    # The company itself is gone, so no contact there will work.
+    if result == R.COMPANY_DISSOLVED:
+        return A.DISSOLVED_COMPANY
+
+    # The company is on the register but this person is not on its officer
+    # list at all, which is a different problem from a known departure.
+    if result == R.NO_OFFICER:
+        return A.REVIEW_OFFICER_LIST
 
     # Nothing usable came back, or the input row is incomplete.
     if result in (R.MISSING_REGNUM, R.COMPANY_NOT_FOUND, R.LOOKUP_FAILED,
                   R.CH_SKIPPED) or reason == RSN.NO_NAME:
         return A.FIX_DATA
 
+    # Probably gone, but the identity was not confirmed, so it is not the
+    # same queue as a confirmed resignation.
+    if result == R.POSSIBLE_RESIGNED:
+        return A.POSSIBLE_RESIGNED
+
     # We are not confident we found the right person, so nothing can be
     # concluded about their address until a human confirms the identity.
-    if result in (R.POSSIBLE_ACTIVE, R.POSSIBLE_RESIGNED):
+    if result == R.POSSIBLE_ACTIVE:
         return A.UNCERTAIN_MATCH
 
     if result == R.ACTIVE:
@@ -2076,10 +2095,10 @@ def classify_action(context):
             return A.ALL_CORRECT
         if reason == RSN.GENERIC:
             if domain_verdict == "ok":
-                return A.ALL_CORRECT
+                return A.GENERIC_MAILBOX
             if domain_verdict == "personal":
                 return A.NON_COMPANY_DOMAIN
-            return A.MISMATCHED
+            return A.GENERIC_MAILBOX_NON_COMPANY_DOMAIN
         if reason == RSN.PERSONAL_DOMAIN:
             return A.NON_COMPANY_DOMAIN
         # domain_not_matched or email_pattern_unrecognised: the address does
@@ -2369,62 +2388,110 @@ OUTPUT_COLUMNS = ["action", "result", "result_reason",
                   "ch_officer_name", "ch_officer_status",
                   "companyhouse_names", "active_officer_suggestions", "source_row"]
 
-# Work queues first, investigate-all-correct last: those rows are the ones
-# you do not need to read, so they belong at the bottom of the sheet.
+# Sheet and row order. Work queues first; the rows you do not need to read
+# sit at the bottom. ACTION_ORDER is the single source of truth for both the
+# row sort in Results and the order of the queue sheets, so the two cannot
+# drift apart. Every value A can return must appear here, otherwise it would
+# sort into an unnamed bucket at the end; _check_action_order asserts that.
 ACTION_ORDER = [
     A.FIX_ADDRESS,
     A.FIND_NEW_CONTACT,
+    A.DISSOLVED_COMPANY,
+    A.POSSIBLE_RESIGNED,
     A.MISMATCHED,
     A.UNCERTAIN_MATCH,
-    A.NON_COMPANY_DOMAIN,
     A.FIX_DATA,
+    A.GENERIC_MAILBOX_NON_COMPANY_DOMAIN,
+    A.REVIEW_OFFICER_LIST,
+    A.NON_COMPANY_DOMAIN,
+    A.GENERIC_MAILBOX,
     A.ALL_CORRECT,
 ]
+
+# Tab title per action. Excel caps a sheet name at 31 characters and the row
+# count is appended, so these stay short.
+ACTION_SHEET_TITLE = {
+    A.FIX_ADDRESS: "Fix address",
+    A.FIND_NEW_CONTACT: "Find new contact",
+    A.DISSOLVED_COMPANY: "Dissolved company",
+    A.POSSIBLE_RESIGNED: "Possible resigned",
+    A.MISMATCHED: "Mismatched",
+    A.UNCERTAIN_MATCH: "Uncertain match",
+    A.FIX_DATA: "Fix data",
+    A.GENERIC_MAILBOX_NON_COMPANY_DOMAIN: "Generic + other domain",
+    A.REVIEW_OFFICER_LIST: "Review officer list",
+    A.NON_COMPANY_DOMAIN: "Non-company domain",
+    A.GENERIC_MAILBOX: "Generic mailbox",
+    A.ALL_CORRECT: "No action",
+}
 
 # One muted fill per action, applied to the action cell only. Colouring whole
 # rows turns a long sheet into noise; one column is enough to scan by.
 ACTION_FILL = {
-    A.FIX_ADDRESS:        "FFE8C6",   # amber  - you can fix this yourself
-    A.FIND_NEW_CONTACT:   "CFE2F3",   # blue   - needs a different person
-    A.MISMATCHED:         "FBD9C8",   # orange - needs a human eye
-    A.UNCERTAIN_MATCH:    "E4D5F0",   # purple - identity unconfirmed
-    A.NON_COMPANY_DOMAIN: "EDEDED",   # grey   - no company signal
-    A.FIX_DATA:           "F8CFCF",   # red    - input or run problem
-    A.ALL_CORRECT:        "D9EAD3",   # green  - nothing found, skip
+    A.FIX_ADDRESS:         "FFE8C6",   # amber  - you can fix this yourself
+    A.FIND_NEW_CONTACT:    "CFE2F3",   # blue   - needs a different person
+    A.DISSOLVED_COMPANY:   "B7D6EC",   # blue   - the company itself is gone
+    A.POSSIBLE_RESIGNED:   "DCE9F5",   # blue   - probably gone, unconfirmed
+    A.REVIEW_OFFICER_LIST: "E8F0F8",   # blue   - not on the register at all
+    A.MISMATCHED:          "FBD9C8",   # orange - needs a human eye
+    A.UNCERTAIN_MATCH:     "E4D5F0",   # purple - identity unconfirmed
+    A.FIX_DATA:            "F8CFCF",   # red    - input or run problem
+    A.GENERIC_MAILBOX:     "F2F2F2",   # grey   - not a personal mailbox
+    A.NON_COMPANY_DOMAIN:  "EDEDED",   # grey   - no company signal
+    A.GENERIC_MAILBOX_NON_COMPANY_DOMAIN: "E0E0E0",   # grey - neither signal
+    A.ALL_CORRECT:         "D9EAD3",   # green  - nothing found, skip
 }
+
+
+def _check_action_order():
+    """Fail loudly at import if an action has no place in the order."""
+    known = set(value for name, value in vars(A).items()
+                if not name.startswith("_") and isinstance(value, str))
+    missing = known - set(ACTION_ORDER)
+    if missing:
+        raise RuntimeError("ACTION_ORDER is missing: {}".format(sorted(missing)))
+    untitled = set(ACTION_ORDER) - set(ACTION_SHEET_TITLE)
+    if untitled:
+        raise RuntimeError("ACTION_SHEET_TITLE is missing: {}".format(sorted(untitled)))
+
+
+_check_action_order()
 
 MAX_COLUMN_WIDTH = 46
 
-# One sheet per queue of work, so a sheet can be handed to one person.
-# These are narrow VIEWS of Results, not copies of it: each carries only the
-# columns that queue needs, and source_row maps every line back. That keeps
-# it obvious which sheet is the source of truth.
+# One sheet per action, so a sheet can be handed to one person. These are
+# narrow VIEWS of Results, not copies of it: each carries only the columns
+# that queue needs, and source_row maps every line back, which keeps it
+# obvious that Results is the source of truth.
 #
-# investigate-all-correct gets its own sheet rather than sitting inside
-# Investigate. It is usually the largest group and nothing needs doing with
-# it, so mixing it in would bury the rows that do need a human; on its own
-# sheet it is simply the pile you can ignore.
-#
-# Fix address carries both company names: the input one for recognition, and
-# the registered one because a domain typo is corrected against the real
-# company name, not against whatever the source file happened to record.
-WORKLIST_SHEETS = [
-    ("Fix address", [A.FIX_ADDRESS],
-     ["source_row", "first_name", "last_name", "company", "companyhouse_names",
-      "email", "result", "result_reason", "ch_officer_name"]),
-    ("Find new contact", [A.FIND_NEW_CONTACT],
-     ["source_row", "first_name", "last_name", "company", "companyhouse_names",
-      "result", "active_officer_suggestions"]),
-    ("Investigate", [A.MISMATCHED, A.UNCERTAIN_MATCH, A.NON_COMPANY_DOMAIN],
-     ["source_row", "first_name", "last_name", "email", "action",
-      "result", "result_reason", "ch_officer_name", "companyhouse_names"]),
-    ("Fix data", [A.FIX_DATA],
-     ["source_row", "first_name", "last_name", "email", "company", "regnum",
-      "result", "result_reason"]),
-    ("No action", [A.ALL_CORRECT],
-     ["source_row", "first_name", "last_name", "company", "companyhouse_names",
-      "email", "result", "result_reason", "ch_officer_name"]),
-]
+# The sheets are derived from ACTION_ORDER rather than listed separately.
+# A second hand-maintained list would drift out of step with the ordering
+# the moment an action was added.
+WORKLIST_COLUMNS = ["source_row", "first_name", "last_name", "company",
+                    "companyhouse_names", "email", "result", "result_reason",
+                    "ch_officer_name"]
+
+# Queues where the question is "who do I contact instead", so the suggested
+# replacements matter more than the email reasoning.
+SUGGESTION_COLUMNS = ["source_row", "first_name", "last_name", "company",
+                      "companyhouse_names", "result",
+                      "active_officer_suggestions"]
+
+WORKLIST_COLUMN_OVERRIDES = {
+    A.FIND_NEW_CONTACT: SUGGESTION_COLUMNS,
+    A.DISSOLVED_COMPANY: SUGGESTION_COLUMNS,
+    A.POSSIBLE_RESIGNED: SUGGESTION_COLUMNS,
+    A.REVIEW_OFFICER_LIST: SUGGESTION_COLUMNS,
+    A.UNCERTAIN_MATCH: ["source_row", "first_name", "last_name", "email",
+                        "result", "ch_officer_name", "result_reason",
+                        "active_officer_suggestions"],
+    A.FIX_DATA: ["source_row", "first_name", "last_name", "email", "company",
+                 "regnum", "result", "result_reason"],
+}
+
+
+def worklist_columns(action):
+    return WORKLIST_COLUMN_OVERRIDES.get(action, WORKLIST_COLUMNS)
 
 
 def _worklist_value(context, column):
@@ -2464,16 +2531,15 @@ def _write_worklist_sheets(workbook, contexts):
         by_action.setdefault(classify_action(context), []).append(context)
 
     created = []
-    for title, actions, columns in WORKLIST_SHEETS:
-        rows = []
-        for action in actions:
-            rows.extend(by_action.get(action, []))
+    for action in ACTION_ORDER:
+        rows = by_action.get(action, [])
         if not rows:
-            continue                      # no work, no sheet
-        rows.sort(key=lambda c: (classify_action(c), c["source_row"]))
+            continue                      # no rows, no sheet
+        rows.sort(key=lambda c: c["source_row"])
+        columns = worklist_columns(action)
 
         # Excel caps sheet names at 31 characters.
-        name = "{} ({})".format(title, len(rows))[:31]
+        name = "{} ({})".format(ACTION_SHEET_TITLE[action], len(rows))[:31]
         sheet = workbook.create_sheet(name)
         sheet.append(columns)
         for cell in sheet[1]:
@@ -2623,6 +2689,14 @@ def _write_summary_sheet(workbook, contexts, run_stats, worklists=None):
     _autosize(sheet, ["value", "rows", "share"], sheet.max_row)
 
 
+# Every action meaning "this contact cannot be reached at this company",
+# whatever the reason. The Companies sheet counts these together, because at
+# company level the distinction between resigned, never listed and dissolved
+# does not change the answer: you need a different contact there.
+UNREACHABLE_ACTIONS = (A.FIND_NEW_CONTACT, A.DISSOLVED_COMPANY,
+                       A.POSSIBLE_RESIGNED, A.REVIEW_OFFICER_LIST)
+
+
 def _write_companies_sheet(workbook, contexts):
     """
     One row per company rather than per contact: a different grain, not a copy
@@ -2631,7 +2705,8 @@ def _write_companies_sheet(workbook, contexts):
     from openpyxl.styles import Font
 
     headers = ["regnum", "companyhouse_names", "company_status", "input_company",
-               "bounced_contacts", "resigned_or_missing", "active_officer_suggestions"]
+               "bounced_contacts", "unreachable_contacts",
+               "active_officer_suggestions"]
     sheet = workbook.create_sheet("Companies")
     sheet.append(headers)
     for cell in sheet[1]:
@@ -2646,7 +2721,7 @@ def _write_companies_sheet(workbook, contexts):
                      "contacts": 0, "gone": 0, "suggestions": ""}
             companies[key] = entry
         entry["contacts"] += 1
-        if classify_action(context) == A.FIND_NEW_CONTACT:
+        if classify_action(context) in UNREACHABLE_ACTIONS:
             entry["gone"] += 1
         entry["names"] = entry["names"] or context["company_name"]
         entry["status"] = entry["status"] or context["company_status"]

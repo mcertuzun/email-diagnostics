@@ -247,17 +247,18 @@ An `.xlsx` output has three sheets. This is still **one file** — the original 
 
 **`Summary`** — the action, result and reason distributions plus the run metadata: when it ran, which mode, how many rows, how many companies, how many HTTP requests. The console prints this too, but there it scrolls away.
 
-**Work queue sheets** — one per queue that has rows: `Fix address (23)`, `Find new contact (11)`, `Investigate (7)`, `Fix data (2)`, `No action (140)`. The point is that a sheet can be handed to one person: the address corrections go to whoever maintains the list, the replacements go to whoever does the research. Filtering cannot do that.
+**Work queue sheets** — **one sheet per action**, in `ACTION_ORDER`: `Fix address (23)`, `Find new contact (11)`, `Dissolved company (3)`, `Possible resigned (4)`, `Mismatched (7)`, `Uncertain match (5)`, `Fix data (2)`, `Generic + other domain (1)`, `Review officer list (9)`, `Non-company domain (6)`, `Generic mailbox (8)`, `No action (140)`. The point is that a sheet can be handed to one person: the address corrections go to whoever maintains the list, the replacements go to whoever does the research. Filtering cannot do that.
 
 These are narrow **views** of `Results`, not copies of it. Each carries only the columns its queue needs — `Find new contact` has the company and the suggestions, not the email pattern reasoning — and `source_row` is the first column on every one, so any line maps straight back. That also settles which sheet is authoritative: edit `Results`.
 
 Two deliberate choices:
 
-- **`investigate-all-correct` gets its own `No action` sheet** rather than sitting inside `Investigate`. It is usually the largest group and nothing needs doing with it, so mixing it in would bury the rows that do need a human. `Investigate` holds the three that do: `investigate-mismatched`, `investigate-uncertain-match`, `investigate-non-company-domain`.
+- **A queue with no rows gets no sheet**, and the row count is in the tab name. The tab bar then tells you the workload without opening anything.
 - **`Fix address` carries both company names.** The input one so the row is recognisable, and the registered one because a domain typo is corrected against the real company name, not against whatever the source file happened to record.
+- **Queues about who to contact instead** — `Find new contact`, `Dissolved company`, `Possible resigned`, `Review officer list` — carry `active_officer_suggestions` rather than the email reasoning, because that is the column the work needs.
 - **A queue with no rows gets no sheet**, and the row count is in the tab name. The tab bar then tells you the workload without opening anything.
 
-**`Companies`** — one row per company, not per contact. A different grain, not a copy: regnum, official name, status, how many contacts bounced there and how many of them have gone, with the active officers. Sorted so the companies with the most departures come first. This is the sheet that answers "which companies do I need to re-contact wholesale".
+**`Companies`** — one row per company, not per contact. A different grain, not a copy: regnum, official name, status, how many contacts bounced there and how many are unreachable, with the active officers. Sorted so the companies with the most departures come first. This is the sheet that answers "which companies do I need to re-contact wholesale".
 
 `--plain` turns all of it off — one sheet, input order, no colour — if you are feeding the output into something else.
 
@@ -291,24 +292,31 @@ Every original column is preserved, with these appended:
 ### `action` values
 
 `result` has 16 values, which is too many to work through by hand. `action`
-collapses them into seven queues, so you can filter the sheet by what needs
-doing rather than by diagnosis.
+answers "what do I do about this row" instead, and each one gets its own sheet.
+
+The order below is the order the rows are sorted in and the order the tabs
+appear: work queues first, the rows you do not need to read last.
 
 | `action` | Covers | Next step |
 |---|---|---|
 | `fix-address` | `*_typo`, `malformed_email`, `missing_email` | Correct the address yourself |
-| `find-new-contact` | `resigned_officer_match`, `no_officer_match_found`, `company_dissolved` | The person is gone — use `active_officer_suggestions` |
-| `investigate-all-correct` | Active officer, address consistent with the name, domain is the company's | Nothing wrong was found. The bounce is a mail-system matter: full mailbox, deleted mailbox, spam filter, server fault |
-| `investigate-non-company-domain` | Active officer, but the address is on a personal provider (gmail, hotmail…) | The domain carries no company signal, so nothing can be concluded from it |
-| `investigate-mismatched` | Active officer, but the domain is unrelated to the company, or the address bears no resemblance to the name | Not close enough to call a typo; needs a human eye |
-| `investigate-uncertain-match` | `possible_officer_match_*` — only the surname or only an initial matched | Confirm who this person is before concluding anything |
+| `find-new-contact` | `resigned_officer_match` | Confirmed departure — use `active_officer_suggestions` |
+| `dissolved-company` | `company_dissolved` | The company itself is gone; no contact there will work |
+| `possible-resigned` | `possible_officer_match_resigned` | Probably gone, but the identity was not confirmed |
+| `investigate-mismatched` | Active officer, but the domain is unrelated to the company or the address bears no resemblance to the name | Not close enough to call a typo; needs a human eye |
+| `investigate-uncertain-match` | `possible_officer_match_active` — only the surname or an initial matched | Confirm who this person is before concluding anything |
 | `fix-data` | `missing_regnum`, `company_not_found`, `companies_house_lookup_failed`, `companies_house_skipped`, empty name fields | Fix the input or rerun |
+| `generic-mailbox-non-company-domain` | Active officer, but the address is a generic mailbox **and** the domain is not the company's | Neither the mailbox nor the domain carries a signal |
+| `review-officer-list` | `no_officer_match_found` — the company is on the register but this person is not on its officer list | Different from a known departure: check the list yourself |
+| `non-company-domain` | Active officer on a personal provider (gmail, hotmail…) | The domain carries no company signal |
+| `generic-mailbox` | Active officer, address is `info@`/`accounts@` on the company's own domain | Not a personal mailbox, so it says nothing about the person |
+| `all-correct` | Active officer, address consistent with the name, domain is the company's | Nothing wrong was found. The bounce is a mail-system matter: full mailbox, deleted mailbox, spam filter, server fault |
 
-Most rows usually land in `investigate-all-correct`, and those are the ones you do **not** need to read. The other six are the real work queue.
+> `all-correct` does **not** mean the address is valid. Since no mail server is ever contacted, that can never be established — it means nothing was found wrong in the places this tool can look.
 
-> `investigate-all-correct` does **not** mean the address is valid. Since no mail server is ever contacted, that can never be established — it means nothing was found wrong in the places this tool can look.
+`ACTION_ORDER` in the script is the single source of truth for both the row sort and the tab order; the sheets are derived from it rather than listed separately, so the two cannot drift apart. An action missing from it, from `ACTION_SHEET_TITLE` or from `ACTION_FILL` raises at import rather than silently landing rows in an unnamed bucket.
 
-**A note on how the classification is derived.** It reads three things: `result`, `result_reason` and the recorded domain verdict. The verdict is needed because `detect_email_typo` returns early for a generic mailbox and reports `result_reason` as `generic_mailbox` whatever the domain turned out to be. By reason alone, `info@acme.co.uk`, `info@gmail.com` and `info@totallyunrelated.com` are indistinguishable; the verdict is what sends them to `investigate-all-correct`, `investigate-non-company-domain` and `investigate-mismatched` respectively.
+**A note on how the classification is derived.** It reads three things: `result`, `result_reason` and the recorded domain verdict. The verdict is needed because `detect_email_typo` returns early for a generic mailbox and reports `result_reason` as `generic_mailbox` whatever the domain turned out to be. By reason alone, `info@acme.co.uk`, `info@gmail.com` and `info@totallyunrelated.com` are indistinguishable; the verdict is what sends them to `generic-mailbox`, `non-company-domain` and `generic-mailbox-non-company-domain` respectively.
 
 ### `result` values
 

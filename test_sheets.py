@@ -170,9 +170,11 @@ check("distinct regnums", sorted(r[0] for r in cdata), ["00000001", "00000002"])
 contacts_index = cheader.index("bounced_contacts")
 check("contact counts sum to the row count",
       sum(r[contacts_index] for r in cdata), len(ROWS))
-gone_index = cheader.index("resigned_or_missing")
+gone_index = cheader.index("unreachable_contacts")
 check("company with departures sorted first", cdata[0][0], "00000002")
-check("  and it counts both of them", cdata[0][gone_index], 2)
+# The departure and the never-listed contact are different actions now, but
+# at company level both mean "nobody reachable here".
+check("  counts every unreachable contact", cdata[0][gone_index], 2)
 sugg_index = cheader.index("active_officer_suggestions")
 check("suggestions carried through", "Nina New" in (cdata[0][sugg_index] or ""), True)
 
@@ -195,14 +197,15 @@ check("source_row is the first column", fix_rows[0][0], "source_row")
 
 find_name = [n for n in worklists if n.startswith("Find new contact")][0]
 find_rows = list(book[find_name].iter_rows(values_only=True))
-check("Find new contact row count", len(find_rows) - 1, 2)
+check("Find new contact holds only the confirmed departure",
+      len(find_rows) - 1, 1)
 find_header = list(find_rows[0])
 check("carries the suggestions column",
       "active_officer_suggestions" in find_header, True)
 check("does not carry email pattern noise", "result_reason" in find_header, False)
 
-check("no Investigate sheet when nothing needs looking at",
-      any(n.startswith("Investigate") for n in book.sheetnames), False)
+check("no sheet for a queue with no rows",
+      any(n.startswith("Mismatched") for n in book.sheetnames), False)
 
 check("Fix address carries the input company", "company" in list(fix_rows[0]), True)
 check("Fix address carries the registered name",
@@ -215,8 +218,15 @@ no_action_name = [n for n in worklists if n.startswith("No action")][0]
 no_action_rows = list(book[no_action_name].iter_rows(values_only=True))
 check("No action sheet exists", no_action_name.startswith("No action"), True)
 check("holds every all-correct row", len(no_action_rows) - 1, len(all_correct_rows))
-check("all-correct is NOT in the Investigate queue",
-      any(n.startswith("Investigate") for n in worklists), False)
+check("all-correct has its own sheet, not a shared one",
+      no_action_name.startswith("No action"), True)
+
+# The tabs must follow ACTION_ORDER, since that is what the arrangement means.
+order = [a for a in ED.ACTION_ORDER
+         if any(n.startswith(ED.ACTION_SHEET_TITLE[a] + " (") for n in worklists)]
+expected_tabs = ["%s (" % ED.ACTION_SHEET_TITLE[a] for a in order]
+check("tabs follow ACTION_ORDER",
+      [n.split("(")[0] + "(" for n in worklists], expected_tabs)
 
 in_queues = sum(len(list(book[name].iter_rows(values_only=True))) - 1
                 for name in worklists)

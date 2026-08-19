@@ -42,7 +42,12 @@ SHARED_SURNAME = [{"name": "BROWN, Alan",
                   {"name": "BROWN, Barry",
                    "name_elements": {"forename": "Barry", "surname": "Brown"}}]
 
-REGISTRY = {"00000001": ACTIVE, "00000002": RESIGNED, "00000003": SHARED_SURNAME}
+ONLY_RESIGNED_SURNAME = [{"name": "BROWN, Barry",
+                          "name_elements": {"forename": "Barry", "surname": "Brown"},
+                          "resigned_on": "2022-02-02"}]
+
+REGISTRY = {"00000001": ACTIVE, "00000002": RESIGNED, "00000003": SHARED_SURNAME,
+            "00000005": ONLY_RESIGNED_SURNAME}
 DISSOLVED = {"00000004"}
 
 
@@ -62,13 +67,14 @@ CASES = [
     ("John", "Smith", "john.smith@acme.co.uk", "00000001",
      ED.A.ALL_CORRECT, "active, name matches, company domain"),
     ("John", "Smith", "info@acme.co.uk", "00000001",
-     ED.A.ALL_CORRECT, "generic mailbox but the domain IS the company"),
+     ED.A.GENERIC_MAILBOX, "generic mailbox on the company's own domain"),
     ("John", "Smith", "john.smith@gmail.com", "00000001",
      ED.A.NON_COMPANY_DOMAIN, "active, personal provider"),
     ("John", "Smith", "info@gmail.com", "00000001",
      ED.A.NON_COMPANY_DOMAIN, "generic mailbox on a personal provider"),
     ("John", "Smith", "info@totallyunrelated.com", "00000001",
-     ED.A.MISMATCHED, "generic mailbox on an unrelated domain -> NOT all-correct"),
+     ED.A.GENERIC_MAILBOX_NON_COMPANY_DOMAIN,
+     "generic mailbox AND an unrelated domain: neither signal"),
     ("John", "Smith", "john.smith@totallyunrelated.com", "00000001",
      ED.A.MISMATCHED, "active, domain unrelated to the company"),
     ("John", "Smith", "xq7z9@acme.co.uk", "00000001",
@@ -80,13 +86,15 @@ CASES = [
     ("Gone", "Old", "gone.old@acme.co.uk", "00000002",
      ED.A.FIND_NEW_CONTACT, "person has resigned"),
     ("Nobody", "Here", "nobody.here@acme.co.uk", "00000001",
-     ED.A.FIND_NEW_CONTACT, "no officer by that name"),
+     ED.A.REVIEW_OFFICER_LIST, "not on the officer list at all"),
     ("Someone", "Else", "someone@acme.co.uk", "00000004",
-     ED.A.FIND_NEW_CONTACT, "company dissolved"),
+     ED.A.DISSOLVED_COMPANY, "the company itself is gone"),
     ("Chris", "Brown", "c.brown@acme.co.uk", "00000003",
      ED.A.UNCERTAIN_MATCH, "surname shared by two officers, forename does not match"),
     ("John", "Smith", "john.smith@acme.co.uk", "",
      ED.A.FIX_DATA, "regnum missing"),
+    ("Chris", "Brown", "c.brown@beta.co.uk", "00000005",
+     ED.A.POSSIBLE_RESIGNED, "surname-only match on someone who has resigned"),
 ]
 
 workbook = openpyxl.Workbook()
@@ -139,6 +147,22 @@ print("-" * 108)
 print("action is the FIRST added column: %r" % header[6])
 if header[6] != "action":
     problems.append("action is not the first added column: %r" % header[6])
+
+# Every action the classifier can return must have a place in the ordering
+# and a sheet title, otherwise it silently lands in an unnamed bucket.
+declared = set(v for k, v in vars(ED.A).items()
+               if not k.startswith("_") and isinstance(v, str))
+missing_order = declared - set(ED.ACTION_ORDER)
+missing_title = declared - set(ED.ACTION_SHEET_TITLE)
+missing_fill = declared - set(ED.ACTION_FILL)
+print("actions declared: %d, ordered: %d" % (len(declared), len(ED.ACTION_ORDER)))
+for label, gap in (("ACTION_ORDER", missing_order),
+                   ("ACTION_SHEET_TITLE", missing_title),
+                   ("ACTION_FILL", missing_fill)):
+    if gap:
+        problems.append("%s is missing %s" % (label, sorted(gap)))
+    else:
+        print("  %-20s complete" % label)
 
 print()
 print("=" * 108)
